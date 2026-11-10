@@ -9,8 +9,32 @@ import re
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
-GFLOW_BIN = os.getenv("GFLOW_BIN", shutil.which("gflow") or "gflow")
-DEFAULT_PROFILE = os.getenv("GFLOW_PROFILE", "cavepaint")
+def get_default_profile() -> str:
+    explicit = os.getenv("GFLOW_PROFILE")
+    if explicit:
+        return explicit
+    home_dir = os.path.expanduser("~")
+    base_dir = os.path.join(home_dir, "Library", "Application Support", "gflow-cli")
+    if os.path.exists(base_dir):
+        for entry in os.listdir(base_dir):
+            if entry.startswith("profile_"):
+                return entry.replace("profile_", "")
+    return "cavepaint"
+
+def get_gflow_bin() -> str:
+    env_bin = os.getenv("GFLOW_BIN")
+    if env_bin and (os.path.exists(env_bin) or shutil.which(env_bin)):
+        return env_bin
+    local_bin = os.path.expanduser("~/.local/bin/gflow")
+    if os.path.exists(local_bin):
+        return local_bin
+    venv_bin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".venv", "bin", "gflow"))
+    if os.path.exists(venv_bin):
+        return venv_bin
+    return shutil.which("gflow") or "gflow"
+
+GFLOW_BIN = get_gflow_bin()
+DEFAULT_PROFILE = get_default_profile()
 DEFAULT_DAEMON_HOST = os.getenv("GFLOW_DAEMON_HOST", "http://127.0.0.1:8765")
 
 def find_flow_asset_for_image(img_rel_path: str, profile: str = DEFAULT_PROFILE) -> Optional[Dict[str, str]]:
@@ -232,7 +256,7 @@ def trigger_flow_render(
                             "count": count,
                             "profile": profile,
                             "project": flow_project_id or None,
-                            "project_name": f"CavePaint_{project_slug}",
+                            "project_name": f"MoniSekha_{project_slug}",
                             "reference_images": resolved_refs if resolved_refs else None,
                             "output": temp_out_dir
                         }
@@ -331,7 +355,7 @@ def trigger_flow_render(
         if flow_project_id:
             cmd.extend(["--project", flow_project_id])
         else:
-            cmd.extend(["--project-name", f"CavePaint_{project_slug}"])
+            cmd.extend(["--project-name", f"MoniSekha_{project_slug}"])
 
         print(f"Executing gflow command: {' '.join(cmd)}")
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)

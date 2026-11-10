@@ -5,7 +5,7 @@ import shutil
 from dataclasses import dataclass
 from typing import Optional
 from .database import SessionLocal, Scene, Project, Character, Setting, Generation, sync_project_json
-from .services import draw_things, voice_engine, flow_engine
+from .services import draw_things, voice_engine, flow_engine, agy_image, flow_video, gemini_tts
 
 @dataclass
 class GenerationTask:
@@ -45,7 +45,24 @@ async def process_task(task: GenerationTask):
             print(f"Scene {task.scene_id} or Project {task.project_id} not found.")
             return
 
-        if task.task_type == "image":
+        if task.task_type == "video":
+            if scene.video_status != "queued":
+                return
+            scene.video_status = "processing"
+            db.commit()
+            workspace = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspace"))
+            output_path = os.path.join(workspace, project.slug, f"scene_{scene.scene_number:03d}_video.mp4")
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, flow_video.generate_scene_video,
+                task.payload["image_path"], task.payload["prompt"], output_path,
+                project.aspect_ratio or "16:9", task.payload["model"], project.flow_project_id, task.payload["duration"],
+            )
+            scene.video_status = "completed"
+            scene.video_error = None
+            db.commit()
+
+        elif task.task_type == "image":
             if scene.image_status != "processing":
                 print("Task cancelled in queue. Skipping.")
                 return
@@ -164,6 +181,73 @@ async def process_task(task: GenerationTask):
 
                     sync_project_json(project.id, db)
 
+                elif image_provider == "agy":
+                    # Antigravity (AGY) Agent API Render
+                    ar_map = {
+                        "1:1": (768, 768),
+                        "4:3": (1024, 768),
+                        "16:9": (1024, 576),
+                        "9:16": (576, 1024),
+                        "2:3": (640, 960)
+                    }
+                    width, height = ar_map.get(aspect_ratio, (1024, 576))
+
+                    save_path = await loop.run_in_executor(
+                        None,
+                        agy_image.trigger_agy_render,
+                        full_prompt,
+                        project.slug,
+                        scene.scene_number,
+                        width,
+                        height,
+                        aspect_ratio
+                    )
+
+                    db.refresh(scene)
+                    if scene.image_status != "processing":
+                        print("Task was cancelled during execution.")
+                        return
+
+                    rel_save_path = os.path.relpath(save_path, workspace_dir).replace("\\", "/")
+
+                    try:
+                        current_images = json.loads(scene.images_list) if scene.images_list else []
+                    except Exception:
+                        current_images = []
+
+                    if rel_save_path not in current_images:
+                        current_images.append(rel_save_path)
+
+                    scene.images_list = json.dumps(current_images)
+                    scene.image_path = rel_save_path
+                    scene.image_status = "completed"
+
+                    # Record Generation audit entry
+                    gen_entry = Generation(
+                        scene_id=scene.id,
+                        provider="agy",
+                        model="antigravity_agent_api",
+                        aspect_ratio=aspect_ratio,
+                        count=1,
+                        prompt=full_prompt,
+                        output_paths=json.dumps([rel_save_path]),
+                        status="completed"
+                    )
+                    db.add(gen_entry)
+                    db.commit()
+
+                    # Mirror canonical scene file
+                    try:
+                        proj_dir = os.path.join(workspace_dir, project.slug)
+                        canonical_file = os.path.join(proj_dir, f"scene_{scene.scene_number:03d}.png")
+                        src_file = os.path.join(workspace_dir, scene.image_path)
+                        if os.path.exists(src_file):
+                            shutil.copyfile(src_file, canonical_file)
+                    except Exception as m_err:
+                        print(f"Error mirroring canonical scene image: {m_err}")
+
+                    sync_project_json(project.id, db)
+
                 else:
                     # Local Draw Things Render
                     guidance_scale = float(task.payload.get("guidance_scale", 7.5))
@@ -257,24 +341,47 @@ async def process_task(task: GenerationTask):
                 return
                 
             text = task.payload.get("text")
+            voice_provider = (
+                task.payload.get("voice_provider")
+                or getattr(project, "voice_provider", None)
+                or "voxcpm2"
+            ).lower()
             
             workspace_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspace"))
-            
             loop = asyncio.get_running_loop()
-            save_path = await loop.run_in_executor(
-                None,
-                voice_engine.generate_scene_audio_chunk,
-                text,
-                project.slug,
-                project.voice_profile_tag or "default",
-                scene.scene_number,
-                project.audio_format or "wav"
-            )
+
+            if voice_provider == "gemini":
+                v_name = task.payload.get("gemini_voice_name") or getattr(project, "gemini_voice_name", None) or "Puck"
+                v_style = task.payload.get("gemini_voice_style") or getattr(project, "gemini_voice_style", None) or "ted_ed"
+                save_path = await loop.run_in_executor(
+                    None,
+                    gemini_tts.generate_gemini_scene_audio,
+                    text,
+                    project.slug,
+                    scene.scene_number,
+                    v_name,
+                    v_style,
+                    project.audio_format or "wav",
+                    db,
+                )
+            else:
+                save_path = await loop.run_in_executor(
+                    None,
+                    voice_engine.generate_scene_audio_chunk,
+                    text,
+                    project.slug,
+                    task.payload.get("profile_tag") or project.voice_profile_tag or "(Male, Adult, Documentary tone, Normal speed)",
+                    scene.scene_number,
+                    project.audio_format or "wav",
+                    task.payload.get("cfg_value", 2.0),
+                    task.payload.get("inference_steps", 15),
+                )
             
             rel_save_path = os.path.relpath(save_path, workspace_dir).replace("\\", "/")
             scene.audio_path = rel_save_path
             scene.audio_text = text or scene.narration_khmer
             scene.audio_status = "completed"
+            scene.audio_error = None
             db.commit()
             
             try:
@@ -293,32 +400,68 @@ async def process_task(task: GenerationTask):
                 
             text = task.payload.get("text")
             character_id = task.payload.get("character_id")
+            voice_provider = (
+                task.payload.get("voice_provider")
+                or getattr(project, "voice_provider", None)
+                or "voxcpm2"
+            ).lower()
             
             reference_audio_path = None
             reference_text = None
             character_name = None
+            profile_tag = task.payload.get("profile_tag") or project.voice_profile_tag or "(Male, Adult, Documentary tone, Normal speed)"
             
             workspace_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspace"))
-            
-            if character_id:
-                character = db.query(Character).filter(Character.id == character_id).first()
-                if character:
-                    reference_audio_path = os.path.join(workspace_dir, character.audio_path)
-                    reference_text = character.reference_text
-                    character_name = character.name
-            
             loop = asyncio.get_running_loop()
-            save_path = await loop.run_in_executor(
-                None,
-                voice_engine.generate_single_scene_audio,
-                text,
-                project.slug,
-                scene.scene_number,
-                reference_audio_path,
-                reference_text,
-                project.audio_format or "wav",
-                project.voice_profile_tag or "(Male, Adult, Documentary tone, Normal speed)"
-            )
+
+            if voice_provider == "gemini":
+                v_name = task.payload.get("gemini_voice_name") or getattr(project, "gemini_voice_name", None) or "Puck"
+                v_style = task.payload.get("gemini_voice_style") or getattr(project, "gemini_voice_style", None) or "ted_ed"
+                save_path = await loop.run_in_executor(
+                    None,
+                    gemini_tts.generate_gemini_scene_audio,
+                    text,
+                    project.slug,
+                    scene.scene_number,
+                    v_name,
+                    v_style,
+                    project.audio_format or "wav",
+                    db,
+                )
+            else:
+                if character_id:
+                    character = db.query(Character).filter(Character.id == character_id).first()
+                    if character:
+                        if not character.audio_path:
+                            character.audio_path = await loop.run_in_executor(
+                                None,
+                                voice_engine.ensure_character_reference,
+                                character.id,
+                                character.personality_tag,
+                                character.reference_text,
+                                task.payload.get("cfg_value", 2.0),
+                                task.payload.get("inference_steps", 15),
+                            )
+                            db.commit()
+                        reference_audio_path = os.path.join(workspace_dir, character.audio_path)
+                        if not os.path.isfile(reference_audio_path):
+                            raise FileNotFoundError(f"Voice reference audio is missing for {character.name}")
+                        reference_text = character.reference_text
+                        character_name = character.name
+                
+                save_path = await loop.run_in_executor(
+                    None,
+                    voice_engine.generate_single_scene_audio,
+                    text,
+                    project.slug,
+                    scene.scene_number,
+                    reference_audio_path,
+                    reference_text,
+                    project.audio_format or "wav",
+                    profile_tag,
+                    task.payload.get("cfg_value", 2.0),
+                    task.payload.get("inference_steps", 15),
+                )
             
             rel_save_path = os.path.relpath(save_path, workspace_dir).replace("\\", "/")
             scene.audio_path = rel_save_path
@@ -329,6 +472,7 @@ async def process_task(task: GenerationTask):
                 scene.character_name = character_name
                 
             scene.audio_status = "completed"
+            scene.audio_error = None
             db.commit()
             
             try:
@@ -349,8 +493,12 @@ async def process_task(task: GenerationTask):
             if scene:
                 if task.task_type == "image":
                     scene.image_status = "failed"
+                elif task.task_type == "video":
+                    scene.video_status = "failed"
+                    scene.video_error = str(e)[:2000]
                 elif task.task_type in ("audio", "audio_single"):
                     scene.audio_status = "failed"
+                    scene.audio_error = str(e)[:1500]
                 db.commit()
         except Exception as fallback_e:
             print(f"Failed to update status to failed: {fallback_e}")

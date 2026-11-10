@@ -1,6 +1,6 @@
-# CavePaint - Local Content Creation Engine
+# MoniSekha - Local Content Creation Engine
 
-CavePaint is a local video and content creation studio designed to automate the process of turning raw research and concepts into complete audio-visual timelines. It uses an AI-powered pipeline integrating large language models for scene drafting, local Stable Diffusion for image generation, and local text-to-speech models for narration.
+MoniSekha is a local video and content creation studio designed to automate the process of turning raw research and concepts into complete audio-visual timelines. It uses an AI-powered pipeline integrating large language models for scene drafting, local Stable Diffusion for image generation, and local text-to-speech models for narration.
 
 ## Technology Stack
 - **Frontend**: Next.js 16 (Turbopack), React 18, Tailwind CSS, TypeScript. Icons by Lucide React.

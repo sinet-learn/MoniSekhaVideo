@@ -37,7 +37,7 @@ export interface Character {
   name: string;
   gender: string;
   personality_tag: string;
-  audio_path: string;
+  audio_path: string | null;
   reference_text: string;
 }
 
@@ -57,6 +57,26 @@ const formatTime = (time: number) => {
 };
 
 const DEFAULT_KHMER_PHRASE = "កាលពី ១ម៉ឺនឆ្នាំមុន មនុស្សសម័យបុរេប្រវត្តិ បានរកឃើញអាថ៌កំបាំងមួយយ៉ាងអស្ចារ្យ។";
+
+const GEMINI_VOICES = [
+  { id: "Puck", name: "Puck", gender: "Male", desc: "Bright & energetic (Great for explainers & kids)" },
+  { id: "Kore", name: "Kore", gender: "Female", desc: "Warm & reassuring (Great for healthcare & teaching)" },
+  { id: "Charon", name: "Charon", gender: "Male", desc: "Deep & steady (Great for documentary & history)" },
+  { id: "Fenrir", name: "Fenrir", gender: "Male", desc: "Bold & commanding (Great for epic narratives)" },
+  { id: "Aoede", name: "Aoede", gender: "Female", desc: "Clear & articulate (Great for STEM & tech guides)" },
+  { id: "Leda", name: "Leda", gender: "Female", desc: "Composed & gentle (Great for reflective storytelling)" },
+  { id: "Orus", name: "Orus", gender: "Male", desc: "Crisp & curious (Great for TED-Ed lessons)" },
+  { id: "Zephyr", name: "Zephyr", gender: "Female", desc: "Natural & upbeat (Great for conversational stories)" },
+];
+
+const GEMINI_STYLES = [
+  { id: "ted_ed", name: "🎓 TED-Ed Style", prompt: "TED-Ed animated lesson style: Inquisitive, articulate, captivating storytelling, rhythmic educational pacing, engaging inflections." },
+  { id: "documentary", name: "🎙️ Documentary", prompt: "National Geographic documentary narrator style: Deep, cinematic, contemplative, measured and authoritative pacing." },
+  { id: "clinical", name: "💊 Clinical / Pharmacy", prompt: "Healthcare clinical educator style: Calm, reassuring, precise, caring patient counseling delivery with clear scientific enunciation." },
+  { id: "classroom", name: "🏫 Teacher / Classroom", prompt: "Enthusiastic classroom teacher style: Warm, encouraging, clear instructional delivery, friendly pacing for students." },
+  { id: "conversational", name: "☕ Conversational", prompt: "Casual conversational style: Friendly, warm, relaxed everyday chat directly speaking to the listener." },
+  { id: "energetic", name: "⚡ High-Energy", prompt: "Dynamic presenter style: Upbeat, fast-paced, spirited, inspiring and high energy." },
+];
 
 // Auto-resizing textarea to display full scene detail with NO internal scrollbars
 function AutoResizeTextarea({
@@ -390,12 +410,15 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
 
   // Character Library State
   const [characters, setCharacters] = useState<Character[]>([]);
+  const [voiceSearch, setVoiceSearch] = useState("");
+  const [auditionError, setAuditionError] = useState<string | null>(null);
   const [genderFilter, setGenderFilter] = useState<"All" | "Male" | "Female">("All");
   const [selectedCharIdForProject, setSelectedCharIdForProject] = useState<number | null>(null);
 
   // Character Audition Audio Element
   const previewAudioRef = useRef<HTMLAudioElement>(null);
   const [previewingCharId, setPreviewingCharId] = useState<number | null>(null);
+  const [auditioningCharId, setAuditioningCharId] = useState<number | null>(null);
 
   // Voice Factory Form State
   const [factoryMode, setFactoryMode] = useState<"design" | "clone">("design");
@@ -416,6 +439,12 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
   // Timeline & Playback states
   const [cacheBuster, setCacheBuster] = useState(Date.now());
   const [modelState, setModelState] = useState<string>("unloaded");
+  const [downloadProgress, setDownloadProgress] = useState<{
+    is_downloading: boolean;
+    downloaded_str: string;
+    total_str: string;
+    percent: number;
+  } | null>(null);
   const [timelineFilter, setTimelineFilter] = useState<"all" | "ready" | "pending" | "outdated">("all");
 
   // Master Timeline playback tracking & segment highlight
@@ -464,7 +493,7 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
     fetchCharacters();
   }, []);
 
-  // Poll VoxCPM2 Model status
+  // Poll VoxCPM2 Model status & live weight download progress
   useEffect(() => {
     const fetchModelStatus = async () => {
       try {
@@ -472,12 +501,13 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
         if (res.ok) {
           const data = await res.json();
           setModelState(data.state);
+          setDownloadProgress(data.download_progress || null);
         }
       } catch {}
     };
 
     fetchModelStatus();
-    const interval = setInterval(fetchModelStatus, 5000);
+    const interval = setInterval(fetchModelStatus, 3000);
     return () => clearInterval(interval);
   }, []);
 
@@ -653,18 +683,91 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
   // Compiled tag
   const compiledTag = `(${gender}, ${age}, ${tone} tone, ${speed} speed)`;
 
-  // Auto-sync compiled tag to activeProject if changed
+  // Restore the saved design; opening Voice Studio must never overwrite it.
   useEffect(() => {
-    if (!activeProject?.id) return;
-    if (activeProject.voice_profile_tag === compiledTag) return;
-    const saveTag = async () => {
-      try {
-        await updateActiveProject({ voice_profile_tag: compiledTag });
-      } catch {}
-    };
-    const timer = setTimeout(saveTag, 1000);
-    return () => clearTimeout(timer);
-  }, [compiledTag, activeProject?.id, activeProject?.voice_profile_tag]);
+    const match = activeProject?.voice_profile_tag?.match(/^\(([^,]+), ([^,]+), (.+) tone, (.+) speed\)$/);
+    setGender(match?.[1] || "Male");
+    setAge(match?.[2] || "Adult");
+    setTone(match?.[3] || "Documentary");
+    setSpeed(match?.[4] || "Normal");
+    setHasGeneratedPreview(false);
+  }, [activeProject?.id, activeProject?.voice_profile_tag]);
+
+  const handleDesignChange = (field: "gender" | "age" | "tone" | "speed", value: string) => {
+    const design = { gender, age, tone, speed, [field]: value };
+    setGender(design.gender);
+    setAge(design.age);
+    setTone(design.tone);
+    setSpeed(design.speed);
+    setHasGeneratedPreview(false);
+    void updateActiveProject({
+      voice_profile_tag: `(${design.gender}, ${design.age}, ${design.tone} tone, ${design.speed} speed)`,
+    });
+  };
+
+  const voiceCfgValue = activeProject?.voice_cfg_value ?? 2;
+  const voiceInferenceSteps = activeProject?.voice_inference_steps ?? 15;
+
+  // Gemini 3.8 Flash TTS Settings & Audition State
+  const voiceProvider = (activeProject?.voice_provider || "voxcpm2") as "voxcpm2" | "gemini";
+  const geminiVoiceName = activeProject?.gemini_voice_name || "Puck";
+  const geminiVoiceStyle = activeProject?.gemini_voice_style || "ted_ed";
+
+  const [isAuditioningGemini, setIsAuditioningGemini] = useState(false);
+  const [geminiAuditionError, setGeminiAuditionError] = useState<string | null>(null);
+  const [activeAuditionAudio, setActiveAuditionAudio] = useState<HTMLAudioElement | null>(null);
+  const [customStyleText, setCustomStyleText] = useState("");
+
+  useEffect(() => {
+    if (activeProject?.gemini_voice_style) {
+      const match = GEMINI_STYLES.find((s) => s.id === activeProject.gemini_voice_style);
+      setCustomStyleText(match ? match.prompt : activeProject.gemini_voice_style);
+    } else {
+      setCustomStyleText(GEMINI_STYLES[0].prompt);
+    }
+  }, [activeProject?.gemini_voice_style]);
+
+  const handleAuditionGemini = async () => {
+    if (activeAuditionAudio) {
+      activeAuditionAudio.pause();
+      setActiveAuditionAudio(null);
+      setIsAuditioningGemini(false);
+      return;
+    }
+    setIsAuditioningGemini(true);
+    setGeminiAuditionError(null);
+    try {
+      const sample = activeProject?.scenes?.[0]?.narration_khmer || "សួស្តី! នេះជាសំឡេងគំរូរបស់ប្រព័ន្ធ Gemini Flash TTS ក្នុងរចនាបថដែលអ្នកបានជ្រើសរើស។";
+      const res = await fetch("http://localhost:8000/api/voice/gemini-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          voice_name: geminiVoiceName,
+          style_direction: customStyleText || geminiVoiceStyle,
+          sample_text: sample,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Failed to audition Gemini voice");
+      }
+      const data = await res.json();
+      const audio = new Audio(`http://localhost:8000/${data.audio_path}`);
+      audio.onended = () => {
+        setIsAuditioningGemini(false);
+        setActiveAuditionAudio(null);
+      };
+      audio.onerror = () => {
+        setIsAuditioningGemini(false);
+        setActiveAuditionAudio(null);
+      };
+      setActiveAuditionAudio(audio);
+      await audio.play();
+    } catch (e: any) {
+      setGeminiAuditionError(e.message || "Audition failed");
+      setIsAuditioningGemini(false);
+    }
+  };
 
   // Handle format toggle (WAV | MP3)
   const currentFormat = (activeProject?.audio_format || "wav").toLowerCase();
@@ -808,6 +911,8 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
             gender,
             personality_tag: compiledTag,
             reference_text: newCharRefText,
+            cfg_value: voiceCfgValue,
+            inference_steps: voiceInferenceSteps,
           }),
         });
         if (res.ok) {
@@ -817,6 +922,8 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
       } else {
         const formData = new FormData();
         formData.append("reference_text", newCharRefText);
+        formData.append("cfg_value", String(voiceCfgValue));
+        formData.append("inference_steps", String(voiceInferenceSteps));
         formData.append("text_to_speak", DEFAULT_KHMER_PHRASE);
         if (newCharFile) {
           formData.append("audio_file", newCharFile);
@@ -887,13 +994,37 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
   };
 
   // Character Library Audition
-  const togglePlayCharacterSample = (char: Character) => {
+  const togglePlayCharacterSample = async (char: Character) => {
     if (!previewAudioRef.current) return;
     if (previewingCharId === char.id) {
       previewAudioRef.current.pause();
       setPreviewingCharId(null);
     } else {
-      previewAudioRef.current.src = `http://localhost:8000/static/${char.audio_path}?t=${Date.now()}`;
+      let audioPath = char.audio_path;
+      if (!audioPath) {
+        if (auditioningCharId !== null) return;
+        setAuditioningCharId(char.id);
+        setHasGeneratedPreview(false);
+        try {
+          setAuditionError(null);
+          const res = await fetch(`http://localhost:8000/api/characters/${char.id}/audition`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cfg_value: voiceCfgValue, inference_steps: voiceInferenceSteps }),
+          });
+          if (!res.ok) throw new Error("Voice audition failed");
+          audioPath = (await res.json()).audio_path;
+          setCharacters((prev) => prev.map((item) => item.id === char.id ? { ...item, audio_path: audioPath } : item));
+        } catch (err) {
+          setAuditionError("Could not create this voice sample. Please try again.");
+          console.error("Failed to audition voice:", err);
+          return;
+        } finally {
+          setAuditioningCharId(null);
+        }
+      }
+      if (!previewAudioRef.current) return;
+      previewAudioRef.current.src = `http://localhost:8000/static/${audioPath}?t=${Date.now()}`;
       previewAudioRef.current.play().catch(() => {});
       setPreviewingCharId(char.id);
     }
@@ -912,10 +1043,14 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
     }
   };
 
-  // Filter characters by gender
+  // Search both the name and the voice direction, alongside the gender filter.
   const filteredCharacters = useMemo(() => {
-    return characters.filter((c) => genderFilter === "All" || c.gender === genderFilter);
-  }, [characters, genderFilter]);
+    const query = voiceSearch.trim().toLowerCase();
+    return characters.filter((c) =>
+      (genderFilter === "All" || c.gender === genderFilter) &&
+      (!query || `${c.name} ${c.gender} ${c.personality_tag}`.toLowerCase().includes(query))
+    );
+  }, [characters, genderFilter, voiceSearch]);
 
   // Filter scenes for timeline
   const filteredScenes = useMemo(() => {
@@ -1127,7 +1262,7 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
                             <button
                               key={opt}
                               type="button"
-                              onClick={() => setGender(opt)}
+                              onClick={() => handleDesignChange("gender", opt)}
                               className={`flex-1 py-1.5 text-[10.5px] rounded-lg border transition-all duration-150 cursor-pointer ${
                                 gender === opt
                                   ? "bg-primary/15 dark:bg-primary/20 border-primary/60 text-primary dark:text-blue-400 shadow-2xs ring-1 ring-primary/20 font-bold"
@@ -1155,7 +1290,7 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
                             <button
                               key={item.id}
                               type="button"
-                              onClick={() => setAge(item.id)}
+                              onClick={() => handleDesignChange("age", item.id)}
                               className={`py-1.5 px-2 text-[10px] rounded-lg border transition-all duration-150 cursor-pointer truncate ${
                                 age === item.id
                                   ? "bg-primary/15 dark:bg-primary/20 border-primary/60 text-primary dark:text-blue-400 shadow-2xs ring-1 ring-primary/20 font-bold"
@@ -1193,7 +1328,7 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
                             <button
                               key={item.id}
                               type="button"
-                              onClick={() => setTone(item.id)}
+                              onClick={() => handleDesignChange("tone", item.id)}
                               className={`py-1.5 px-2 text-[10px] rounded-lg border transition-all duration-150 cursor-pointer truncate ${
                                 tone === item.id
                                   ? "bg-primary/15 dark:bg-primary/20 border-primary/60 text-primary dark:text-blue-400 shadow-2xs ring-1 ring-primary/20 font-bold"
@@ -1220,7 +1355,7 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
                             <button
                               key={item.id}
                               type="button"
-                              onClick={() => setSpeed(item.id)}
+                              onClick={() => handleDesignChange("speed", item.id)}
                               className={`flex-1 py-1.5 text-[10px] rounded-lg border transition-all duration-150 cursor-pointer ${
                                 speed === item.id
                                   ? "bg-primary/15 dark:bg-primary/20 border-primary/60 text-primary dark:text-blue-400 shadow-2xs ring-1 ring-primary/20 font-bold"
@@ -1360,6 +1495,25 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
             {activeSubTab === "library" && (
               <div className="flex flex-col h-full space-y-3">
                 
+                <div className="space-y-2 shrink-0">
+                  <p className="text-[10px] text-panel-text leading-relaxed">
+                    Named presets are fictional voice designs. First play creates a saved voice sample;
+                    the same sample is reused for narration across projects.
+                  </p>
+                  <input
+                    type="search"
+                    aria-label="Search voice profiles"
+                    placeholder="Search name, age, tone or style…"
+                    value={voiceSearch}
+                    onChange={(e) => setVoiceSearch(e.target.value)}
+                    className="w-full px-2.5 py-2 text-xs rounded-lg border border-border/70 bg-card text-foreground outline-none focus:border-primary"
+                  />
+                  {auditioningCharId !== null && (
+                    <p role="status" className="text-[10px] text-primary">Creating voice sample. First play may take a moment…</p>
+                  )}
+                  {auditionError && <p role="alert" className="text-[10px] text-red-500">{auditionError}</p>}
+                </div>
+
                 {/* Gender Filters */}
                 <div className="flex items-center justify-between gap-1 pb-1 border-b border-border/40 shrink-0">
                   <div className="flex gap-1">
@@ -1381,7 +1535,7 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
 
                   {characters.length > 0 && (
                     <span className="text-[9.5px] font-mono text-panel-text">
-                      {filteredCharacters.length} Profiles
+                      {filteredCharacters.length}/{characters.length} Profiles
                     </span>
                   )}
                 </div>
@@ -1391,7 +1545,16 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
                   {filteredCharacters.length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center text-center p-6 text-panel-text">
                       <Users size={28} className="opacity-30 mb-2" />
-                      <p className="text-xs font-medium">No character profiles found.</p>
+                      <p className="text-xs font-medium">{characters.length ? "No voices match your filters." : "No character profiles found."}</p>
+                      {characters.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => { setVoiceSearch(""); setGenderFilter("All"); }}
+                          className="mt-2 text-[10.5px] text-primary font-semibold hover:underline cursor-pointer"
+                        >
+                          Clear filters
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => setActiveSubTab("factory")}
@@ -1419,6 +1582,7 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
                               <button
                                 type="button"
                                 onClick={() => togglePlayCharacterSample(char)}
+                                disabled={auditioningCharId !== null || isGeneratingPreview || isAnySceneProcessing}
                                 className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors cursor-pointer shadow-2xs ${
                                   isPreviewing
                                     ? "bg-primary text-white"
@@ -1426,7 +1590,9 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
                                 }`}
                                 title={isPreviewing ? "Pause Audition" : "Play Audition"}
                               >
-                                {isPreviewing ? (
+                                {auditioningCharId === char.id ? (
+                                  <Loader2 size={12} className="animate-spin" />
+                                ) : isPreviewing ? (
                                   <Pause size={12} fill="currentColor" />
                                 ) : (
                                   <Play size={12} fill="currentColor" className="ml-0.5" />
@@ -1434,11 +1600,11 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
                               </button>
 
                               <div className="overflow-hidden flex-1 min-w-0">
-                                <span className="text-xs font-bold text-foreground truncate block">
+                                <span title={char.name} className="text-xs font-bold text-foreground block leading-snug">
                                   {char.name}
                                 </span>
-                                <span className="text-[9px] font-mono text-panel-text truncate block">
-                                  {char.personality_tag}
+                                <span title={char.personality_tag} className="text-[9px] text-panel-text block leading-relaxed">
+                                  {char.personality_tag.replace(/^\(|\)$/g, "") }
                                 </span>
                               </div>
                             </div>
@@ -1626,6 +1792,196 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
         {/* ======================================================= */}
         <div className="flex-1 min-w-[420px] flex flex-col h-full space-y-2 overflow-hidden min-h-0">
           
+          {/* Engine Selector & Voice Settings Card */}
+          <div className="shrink-0 rounded-xl border border-border/70 bg-card p-3 space-y-3">
+            {/* Engine Tabs Header */}
+            <div className="flex items-center justify-between gap-2 border-b border-border/50 pb-2.5">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal size={14} className="text-primary" />
+                <span className="text-xs font-bold text-foreground">Voice Engine:</span>
+              </div>
+              <div className="flex items-center gap-1 bg-zinc-100 dark:bg-zinc-800/80 p-0.5 rounded-lg border border-border/60 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => updateActiveProject({ voice_provider: "gemini" })}
+                  className={`px-2.5 py-1 rounded-md font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    voiceProvider === "gemini"
+                      ? "bg-card text-primary font-bold shadow-2xs border border-primary/20"
+                      : "text-panel-text hover:text-foreground"
+                  }`}
+                  title="Google Gemini 3.8 Flash TTS: fast cloud synthesis, prebuilt voices & expressive styles (TED-Ed, etc.)"
+                >
+                  <Sparkles size={11} className={voiceProvider === "gemini" ? "text-primary" : ""} />
+                  <span>Gemini 3.8 Flash TTS</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateActiveProject({ voice_provider: "voxcpm2" })}
+                  className={`px-2.5 py-1 rounded-md font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    voiceProvider === "voxcpm2"
+                      ? "bg-card text-primary font-bold shadow-2xs border border-primary/20"
+                      : "text-panel-text hover:text-foreground"
+                  }`}
+                  title="VoxCPM2: Local PyTorch neural model running on Unified Memory"
+                >
+                  <span>VoxCPM2 (Local)</span>
+                </button>
+              </div>
+            </div>
+
+            {/* If Gemini Engine is active */}
+            {voiceProvider === "gemini" ? (
+              <div className="space-y-2.5 animate-in fade-in duration-150">
+                {/* Voice Selection & Audition Bar */}
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-semibold text-foreground">Select Voice:</span>
+                    <select
+                      value={geminiVoiceName}
+                      disabled={isAnySceneProcessing}
+                      onChange={(e) => updateActiveProject({ gemini_voice_name: e.target.value })}
+                      className="rounded-lg border border-border/70 bg-background text-foreground text-xs px-2.5 py-1 focus:outline-none focus:border-primary cursor-pointer font-medium"
+                    >
+                      {GEMINI_VOICES.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.name} ({v.gender}) — {v.desc}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Audition Button */}
+                  <button
+                    type="button"
+                    onClick={handleAuditionGemini}
+                    disabled={isAnySceneProcessing}
+                    className="px-3 py-1 rounded-lg text-xs font-semibold text-primary bg-primary/10 hover:bg-primary/20 border border-primary/30 flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
+                    title="Audition this voice and delivery style using scene 1 text"
+                  >
+                    {isAuditioningGemini ? (
+                      <>
+                        <Loader2 size={12} className="animate-spin text-primary" />
+                        <span>Auditioning...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play size={11} fill="currentColor" />
+                        <span>▶ Audition Voice</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {geminiAuditionError && (
+                  <div className="text-[11px] text-red-500 bg-red-500/10 px-2 py-1 rounded-md">
+                    {geminiAuditionError}
+                  </div>
+                )}
+
+                {/* Delivery Style Presets */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-semibold text-foreground">Delivery Style (e.g. TED-Ed):</span>
+                    <span className="text-panel-text text-[10px]">Click a style preset or type custom instructions below</span>
+                  </div>
+
+                  {/* Style Preset Chips */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar pb-0.5 text-[10.5px]">
+                    {GEMINI_STYLES.map((style) => {
+                      const isSelected = customStyleText === style.prompt || geminiVoiceStyle === style.id;
+                      return (
+                        <button
+                          key={style.id}
+                          type="button"
+                          onClick={() => {
+                            setCustomStyleText(style.prompt);
+                            updateActiveProject({
+                              gemini_voice_style: style.id,
+                              global_voice_style: style.prompt,
+                            });
+                          }}
+                          className={`shrink-0 px-2.5 py-1 rounded-lg font-medium transition-all cursor-pointer border ${
+                            isSelected
+                              ? "bg-primary text-white border-primary font-bold shadow-2xs"
+                              : "bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-foreground border-border/50"
+                          }`}
+                        >
+                          {style.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Editable Style Direction Prompt */}
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={customStyleText}
+                      onChange={(e) => setCustomStyleText(e.target.value)}
+                      onBlur={() => {
+                        updateActiveProject({
+                          gemini_voice_style: customStyleText,
+                          global_voice_style: customStyleText,
+                        });
+                      }}
+                      placeholder="e.g. TED-Ed animated lesson style: Inquisitive, articulate, captivating storytelling, rhythmic educational pacing..."
+                      className="w-full bg-background border border-border/70 rounded-lg px-2.5 py-1.5 text-xs text-foreground placeholder:text-zinc-400 focus:outline-none focus:border-primary transition-colors"
+                    />
+                  </div>
+                </div>
+
+                <p className="text-[10px] text-panel-text">
+                  ⚡ <strong>Gemini 3.8 Flash TTS</strong> synthesizes spoken lines in ~1s per scene with zero VRAM usage. It respects natural Khmer pronunciation, English Latin terms (e.g. Paracetamol), and expressive delivery directions.
+                </p>
+              </div>
+            ) : (
+              /* VoxCPM2 Local Engine Settings */
+              <div className="space-y-2 animate-in fade-in duration-150">
+                <div className="flex flex-wrap gap-4 items-center">
+                  <label className="flex items-center gap-2 text-xs text-panel-text">
+                    Voice guidance
+                    <select
+                      aria-label="Voice guidance"
+                      value={voiceCfgValue}
+                      disabled={isAnySceneProcessing || isGeneratingPreview}
+                      onChange={(e) => {
+                        setHasGeneratedPreview(false);
+                        void updateActiveProject({ voice_cfg_value: Number(e.target.value) });
+                      }}
+                      className="rounded-lg border border-border bg-card text-foreground px-2 py-1 disabled:opacity-50"
+                    >
+                      <option value={1}>1.0 — Flexible</option>
+                      <option value={1.5}>1.5 — Natural</option>
+                      <option value={2}>2.0 — Balanced</option>
+                      <option value={2.5}>2.5 — Strong</option>
+                      <option value={3}>3.0 — Very strong</option>
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-panel-text">
+                    Synthesis quality
+                    <select
+                      aria-label="Synthesis quality"
+                      value={voiceInferenceSteps}
+                      disabled={isAnySceneProcessing || isGeneratingPreview}
+                      onChange={(e) => {
+                        setHasGeneratedPreview(false);
+                        void updateActiveProject({ voice_inference_steps: Number(e.target.value) });
+                      }}
+                      className="rounded-lg border border-border bg-card text-foreground px-2 py-1 disabled:opacity-50"
+                    >
+                      {[4, 10, 15, 20, 30, 50].map((steps) => (
+                        <option key={steps} value={steps}>{steps} steps{steps === 4 ? " — Fast" : steps === 15 ? " — Balanced" : steps === 50 ? " — Slowest" : ""}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <p className="text-[10px] text-panel-text">
+                  Saved per project. Runs locally on Apple Silicon / GPU memory. Applies to auditions and newly generated lines.
+                </p>
+              </div>
+            )}
+          </div>
+
           {/* Top Options Toolbar (Cleanly Segmented) */}
           <div className="h-8 shrink-0 flex items-center justify-between gap-2 overflow-x-auto custom-scrollbar">
             
@@ -1684,26 +2040,36 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
                 })}
               </div>
 
-              {/* VoxCPM2 Engine Status Pill */}
-              <button
-                type="button"
-                onClick={handleToggleModel}
-                className={`px-2 py-0.5 rounded-md border text-[9.5px] font-medium flex items-center gap-1.5 shadow-2xs cursor-pointer transition-colors ${
-                  modelState === "loaded"
-                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20"
-                    : modelState === "loading" || modelState === "unloading"
-                    ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30"
-                    : "bg-zinc-100 dark:bg-zinc-800 text-panel-text border-border/60 hover:text-foreground"
-                }`}
-                title={modelState === "loaded" ? "VoxCPM2 is active in memory. Click to unload VRAM." : "Click to load VoxCPM2"}
-              >
-                {modelState === "loading" || modelState === "unloading" ? (
-                  <Loader2 size={9} className="animate-spin" />
-                ) : (
-                  <span className={`w-1.5 h-1.5 rounded-full ${modelState === "loaded" ? "bg-emerald-500" : "bg-neutral-400"}`} />
-                )}
-                <span>VoxCPM2: {modelState}</span>
-              </button>
+              {/* Engine Status Pill */}
+              {voiceProvider === "gemini" ? (
+                <div
+                  className="px-2 py-0.5 rounded-md border text-[9.5px] font-medium flex items-center gap-1.5 shadow-2xs bg-primary/10 text-primary border-primary/30"
+                  title={`Using Gemini 3.8 Flash TTS (${geminiVoiceName}) with ${geminiVoiceStyle}`}
+                >
+                  <Sparkles size={10} className="text-primary" />
+                  <span>Gemini: {geminiVoiceName}</span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleToggleModel}
+                  className={`px-2 py-0.5 rounded-md border text-[9.5px] font-medium flex items-center gap-1.5 shadow-2xs cursor-pointer transition-colors ${
+                    modelState === "loaded"
+                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20"
+                      : modelState === "loading" || modelState === "unloading"
+                      ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30"
+                      : "bg-zinc-100 dark:bg-zinc-800 text-panel-text border-border/60 hover:text-foreground"
+                  }`}
+                  title={modelState === "loaded" ? "VoxCPM2 is active in memory. Click to unload VRAM." : "Click to load VoxCPM2"}
+                >
+                  {modelState === "loading" || modelState === "unloading" ? (
+                    <Loader2 size={9} className="animate-spin" />
+                  ) : (
+                    <span className={`w-1.5 h-1.5 rounded-full ${modelState === "loaded" ? "bg-emerald-500" : "bg-neutral-400"}`} />
+                  )}
+                  <span>VoxCPM2: {modelState}</span>
+                </button>
+              )}
 
               {/* Clear All Audio Button */}
               <button
@@ -1734,7 +2100,11 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
                   <div className="text-[10px] font-mono text-amber-500 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-lg flex items-center gap-1.5 animate-pulse">
                     <Loader2 size={10} className="animate-spin text-amber-500 shrink-0" />
                     <span>
-                      {modelState === "loading" || (synthesisElapsedSeconds < 25 && modelState !== "loaded")
+                      {downloadProgress ? (
+                        `Downloading Model: ${downloadProgress.downloaded_str} / ${downloadProgress.total_str} (${downloadProgress.percent}%)`
+                      ) : voiceProvider === "gemini" ? (
+                        `Synthesizing Line #${activeProcessingScene?.scene_number || 1} via Gemini TTS (${synthesisElapsedSeconds}s)...`
+                      ) : modelState === "loading" || (synthesisElapsedSeconds < 25 && modelState !== "loaded")
                         ? `Warming Up VoxCPM2 Model (${synthesisElapsedSeconds}s)...`
                         : `Rendering Line #${activeProcessingScene?.scene_number || 1} (${synthesisElapsedSeconds}s)`}
                     </span>
@@ -1761,6 +2131,29 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
 
           {/* Vertical Scene List */}
           <div className="flex-1 bg-card rounded-xl border border-border/70 p-3 shadow-2xs overflow-y-auto custom-scrollbar space-y-2 min-h-0">
+            {/* Live VoxCPM2 One-Time Weight Download Banner */}
+            {downloadProgress && (
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 text-xs text-amber-700 dark:text-amber-300 space-y-2">
+                <div className="flex items-center justify-between font-semibold">
+                  <span className="flex items-center gap-1.5">
+                    <Loader2 size={13} className="animate-spin text-amber-500" />
+                    Downloading VoxCPM2 Khmer Weights (One-Time Setup)
+                  </span>
+                  <span className="font-mono text-[11px] bg-amber-500/20 px-2 py-0.5 rounded-md">
+                    {downloadProgress.downloaded_str} / {downloadProgress.total_str} ({downloadProgress.percent}%)
+                  </span>
+                </div>
+                <div className="w-full bg-amber-500/20 rounded-full h-2 overflow-hidden">
+                  <div 
+                    className="bg-amber-500 h-full rounded-full transition-all duration-300"
+                    style={{ width: `${downloadProgress.percent}%` }}
+                  />
+                </div>
+                <p className="text-[10px] text-foreground/60 leading-tight">
+                  Downloading 4.58 GB Khmer neural voice weights from Hugging Face. Once completed, the model stays cached locally and voice synthesis will start immediately.
+                </p>
+              </div>
+            )}
             {filteredScenes.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-center p-8 text-panel-text">
                 <AudioLines size={32} className="opacity-30 mb-2" />
@@ -1929,7 +2322,9 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
                             <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[9px] font-medium bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/40 animate-pulse">
                               <Loader2 size={8} className="animate-spin" />
                               <span>
-                                {modelState === "loading" || (synthesisElapsedSeconds < 25 && modelState !== "loaded")
+                                {downloadProgress ? (
+                                  `Downloading (${downloadProgress.percent}%)...`
+                                ) : modelState === "loading" || (synthesisElapsedSeconds < 25 && modelState !== "loaded")
                                   ? `Warming Up (${synthesisElapsedSeconds}s)...`
                                   : `Synthesizing... (${synthesisElapsedSeconds}s)`}
                               </span>
@@ -1960,6 +2355,8 @@ export default function VoiceTab({ activeProject, refreshProjectData }: VoiceTab
                             Idle
                           </span>
                         )}
+
+                        {scene.audio_error && <div className="space-y-1 max-w-[220px]"><p role="alert" className="text-[10px] text-red-500">{scene.audio_error}</p></div>}
 
                         <button
                           type="button"

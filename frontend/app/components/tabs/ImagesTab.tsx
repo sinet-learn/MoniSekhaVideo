@@ -195,7 +195,7 @@ export default function ImagesTab(props: ImagesTabProps) {
   const [cacheBuster, setCacheBuster] = useState(Date.now());
   
   // Engine & Model controls
-  const [imageProvider, setImageProvider] = useState<"local" | "flow">("flow");
+  const [imageProvider, setImageProvider] = useState<"agy" | "local" | "cloud" | "flow">("agy");
   const [flowModel, setFlowModel] = useState<"nano2" | "nano-pro">("nano2");
   const [imageCount, setImageCount] = useState<number>(1);
   const [flowStatus, setFlowStatus] = useState<{ cli_available: boolean; daemon_running: boolean; authenticated: boolean } | null>(null);
@@ -462,9 +462,8 @@ export default function ImagesTab(props: ImagesTabProps) {
     };
   }, [isAnySceneProcessing, submittingSceneIds.length, isBatchSubmitting, isGeneratingAll, props.refreshProjectData]);
 
-  // Toggle engine (Flow MCP vs Draw Things)
-  const toggleImageEngine = async () => {
-    const nextProvider = imageProvider === "local" ? "flow" : "local";
+  // Set engine (AGY API vs Draw Things vs Cloud vs Flow)
+  const handleSelectImageEngine = async (nextProvider: "agy" | "local" | "cloud" | "flow") => {
     setImageProvider(nextProvider);
     try {
       await fetch("http://localhost:8000/api/settings", {
@@ -475,6 +474,12 @@ export default function ImagesTab(props: ImagesTabProps) {
     } catch (err) {
       console.error("Failed to update image provider setting:", err);
     }
+  };
+
+  const toggleImageEngine = () => {
+    const order: ("agy" | "local" | "cloud" | "flow")[] = ["agy", "local", "cloud", "flow"];
+    const nextIdx = (order.indexOf(imageProvider) + 1) % order.length;
+    handleSelectImageEngine(order[nextIdx]);
   };
 
   // Talk Directly to Flow (Scene Copilot Handler)
@@ -1775,29 +1780,57 @@ export default function ImagesTab(props: ImagesTabProps) {
                 </div>
               )}
 
-              {/* Hot-Swap Engine Toggle */}
-              <button
-                type="button"
-                onClick={toggleImageEngine}
-                className={`px-2 py-0.5 h-7 rounded-lg text-[10px] font-medium transition-all flex items-center gap-1 border shadow-2xs cursor-pointer ${
-                  imageProvider === "flow"
-                    ? "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30 hover:bg-blue-500/20"
-                    : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20"
-                }`}
-                title="Switch between Google Flow (MCP) and Local (Draw Things)"
-              >
-                {imageProvider === "flow" ? (
-                  <>
-                    <Cloud size={10} />
-                    <span>Flow MCP</span>
-                  </>
-                ) : (
-                  <>
-                    <Cpu size={10} />
-                    <span>Local</span>
-                  </>
-                )}
-              </button>
+              {/* Image Engine Selector */}
+              <div className="flex items-center p-0.5 bg-zinc-100 dark:bg-zinc-800/90 rounded-lg border border-border/60 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleSelectImageEngine("agy")}
+                  className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-all cursor-pointer ${
+                    imageProvider === "agy"
+                      ? "bg-card text-foreground shadow-2xs font-semibold ring-1 ring-primary/30"
+                      : "text-panel-text hover:text-foreground"
+                  }`}
+                  title="Antigravity Native Agent API"
+                >
+                  ✨ AGY API
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSelectImageEngine("local")}
+                  className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-all cursor-pointer ${
+                    imageProvider === "local"
+                      ? "bg-card text-foreground shadow-2xs font-semibold ring-1 ring-primary/30"
+                      : "text-panel-text hover:text-foreground"
+                  }`}
+                  title="Draw Things (Local port 7860)"
+                >
+                  💻 Local
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSelectImageEngine("cloud")}
+                  className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-all cursor-pointer ${
+                    imageProvider === "cloud"
+                      ? "bg-card text-foreground shadow-2xs font-semibold ring-1 ring-primary/30"
+                      : "text-panel-text hover:text-foreground"
+                  }`}
+                  title="Pollinations Cloud Direct"
+                >
+                  ☁️ Cloud
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSelectImageEngine("flow")}
+                  className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-all cursor-pointer ${
+                    imageProvider === "flow"
+                      ? "bg-card text-foreground shadow-2xs font-semibold ring-1 ring-primary/30"
+                      : "text-panel-text hover:text-foreground"
+                  }`}
+                  title="Google Flow MCP (port 8765)"
+                >
+                  ⚡ Flow
+                </button>
+              </div>
             </div>
 
           </div>
@@ -1899,7 +1932,7 @@ export default function ImagesTab(props: ImagesTabProps) {
                       <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] rounded-lg flex flex-col items-center justify-center text-center p-4 select-none animate-pulse">
                         <Loader2 size={24} className="mb-2 animate-spin text-primary" />
                         <p className="text-[10.5px] uppercase tracking-widest font-bold text-white">
-                          {imageProvider === "flow" ? "Rendering via Google Flow MCP..." : "Synthesizing frame locally..."}
+                          {imageProvider === "agy" ? "Generating via AGY API..." : imageProvider === "flow" ? "Rendering via Google Flow MCP..." : imageProvider === "cloud" ? "Synthesizing frame via Cloud..." : "Synthesizing frame locally..."}
                         </p>
                         <p className="text-[9.5px] text-zinc-300 mt-0.5">
                           Generating frame variation & updating timeline
@@ -1910,7 +1943,7 @@ export default function ImagesTab(props: ImagesTabProps) {
                     <div className="flex flex-col items-center justify-center text-center p-6 select-none animate-pulse">
                       <Loader2 size={24} className="mb-2 animate-spin text-primary opacity-80" />
                       <p className="text-[10.5px] uppercase tracking-widest font-bold text-foreground">
-                        {imageProvider === "flow" ? "Rendering via Google Flow MCP..." : "Synthesizing frame locally..."}
+                        {imageProvider === "agy" ? "Generating via AGY API..." : imageProvider === "flow" ? "Rendering via Google Flow MCP..." : imageProvider === "cloud" ? "Synthesizing frame via Cloud..." : "Synthesizing frame locally..."}
                       </p>
                       <p className="text-[9.5px] text-panel-text/70 mt-0.5">
                         Generating frame variation & updating timeline
@@ -2150,12 +2183,12 @@ export default function ImagesTab(props: ImagesTabProps) {
                 ) : isAnySceneProcessing ? (
                   <>
                     <Clock size={13} />
-                    <span>Queue Frame ({imageProvider === "flow" ? "Flow" : "Local"})</span>
+                    <span>Queue Frame ({imageProvider === "agy" ? "AGY" : imageProvider === "flow" ? "Flow" : imageProvider === "cloud" ? "Cloud" : "Local"})</span>
                   </>
                 ) : (
                   <>
                     <Wand2 size={13} />
-                    <span>Generate Frame ({imageProvider === "flow" ? "Flow" : "Local"})</span>
+                    <span>Generate Frame ({imageProvider === "agy" ? "AGY" : imageProvider === "flow" ? "Flow" : imageProvider === "cloud" ? "Cloud" : "Local"})</span>
                   </>
                 )}
               </button>

@@ -1,12 +1,12 @@
 # Google Flow Setup & Operation Guide
 
-This guide documents the Google Flow (`gflow-cli` MCP Streamable HTTP) integration with **CavePaint Video Studio**, including the fixes applied for Google's new `flow.google.com` domain, daily startup instructions, and troubleshooting steps.
+This guide documents the Google Flow (`gflow-cli` MCP Streamable HTTP) integration with **MoniSekha Video Studio**, including the fixes applied for Google's new `flow.google.com` domain, daily startup instructions, and troubleshooting steps.
 
 ---
 
 ## 1. What Was Fixed
 
-When setting up Google Flow with CavePaint, five distinct issues were identified and resolved:
+When setting up Google Flow with MoniSekha, five distinct issues were identified and resolved:
 
 ### 1. Support for Migrated Domain (`flow.google.com`)
 * **Problem**: Google recently migrated user accounts from `labs.google/fx/tools/flow` to `flow.google.com`. The `gflow-cli` library hardcoded session checks to `https://labs.google/fx/api/auth/session` and filtered cookies strictly to `labs.google`. Even though you successfully logged into Google and generated images on `flow.google.com`, `gflow-cli` thought you were logged out and entered a 10-minute waiting loop before rolling back authentication.
@@ -60,7 +60,7 @@ cd frontend && npm run dev
 
 ---
 
-## 3. Generating Images in CavePaint
+## 3. Generating Images in MoniSekha
 
 1. Open `http://localhost:3000` in your web browser.
 2. Select your project and navigate to the **Images** tab.

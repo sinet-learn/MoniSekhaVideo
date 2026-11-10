@@ -2,6 +2,7 @@ import json
 import logging
 from sqlalchemy.orm import Session
 from backend.services.llm.client import generate_text
+from backend.services.llm.orchestrators.educational_domain import detect_domain, get_educational_illustration_style
 
 logger = logging.getLogger(__name__)
 
@@ -17,21 +18,23 @@ def refine_scene_prompt(
     Takes the current positive and negative prompts of a scene, applies user instructions 
     and global style constraints, and returns a refined JSON containing both updated fields.
     """
+    combined_ctx = f"{video_concept}\n{global_style}"
+    domain = detect_domain(combined_ctx)
+    domain_style = get_educational_illustration_style(domain)
     
     system_prompt = (
-        "You are an expert prompt engineer specialized in local image synthesis (Stable Diffusion/Flux).\n"
+        "You are an expert prompt engineer specialized in educational image synthesis (Stable Diffusion/Flux/Google Flow).\n"
         "Your task is to modify an existing image generation prompt and its negative constraints "
         "based on specific user instructions, while strictly maintaining the overarching project aesthetic.\n\n"
         
+        f"{domain_style}\n\n"
+        
         "CRITICAL STYLE CONSTRAINT:\n"
-        "You must preserve the core visual engine identity unless explicitly told otherwise:\n"
-        "- Minimalist 2D flat vector stickman doodle art with bold thick black marker outlines.\n"
-        "- Characters must be simple stick figures (round head, large circle eyes, thin stick limbs) - NO realistic muscles, NO comic detail.\n"
-        "- Vibrant flat solid colors and seamless studio backgrounds.\n"
+        "- Follow the Global Illustration Style Guide provided in the user context.\n"
         "- STRICTLY NO text, NO words, NO letters, NO labels on images.\n"
-        "- Keep prompts concise, punchy, and natural (under 50 words).\n"
+        "- Keep prompts concise, punchy, and natural (under 55 words).\n"
         "- Preserve the visual archetype of the shot and metaphor alignment with script.\n"
-        "- NO gradients, NO 3D shading, NO complex photorealism.\n\n"
+        "- Avoid messy photorealism. Only use gradients/shading/texture if the Global Style Guide calls for them.\n\n"
         
         "OUTPUT RULE:\n"
         "You must output a strictly valid JSON object matching this schema exactly. "
@@ -91,24 +94,28 @@ def refine_scene_prompt_and_script(
     """
     Intelligent Scene Copilot: takes the current scene's image prompt, Khmer voiceover narration,
     and negative constraints, applies user adjustment instructions, and updates both the visual
-    prompt and Khmer script while strictly adhering to Whatly stickman style guidelines.
+    prompt and Khmer script while strictly adhering to the Global Style Guide.
     Supports distinguishing between:
     - Target Image: The base composition/subject to keep and modify slightly.
     - Reference Images: Auxiliary guides to borrow style, outfits, characters, or props from.
     - No Target: Generating a completely new scene from scratch guided by references.
     """
+    combined_ctx = f"{video_concept}\n{global_style}"
+    domain = detect_domain(combined_ctx)
+    domain_style = get_educational_illustration_style(domain)
+
     system_prompt = (
-        "You are an expert Creative Director & Prompt Engineer for YouTube explainer animations (Whatly stickman style).\n"
+        "You are an expert Creative Director & Prompt Engineer for educational explainer video animations.\n"
         "Your role is to iteratively refine a video scene's visual prompt and its corresponding Khmer voiceover script "
         "based on natural language user feedback.\n\n"
         
-        "CRITICAL VISUAL STYLE GUIDELINES (STICKMAN DOODLE):\n"
-        "- Minimalist 2D flat vector stickman doodle illustration with clean thick bold black marker outlines.\n"
-        "- Stick figures have round heads, large simple circle eyes, and thin stick limbs. Zero muscular anatomy, zero comic book cross-hatching.\n"
-        "- Flat solid colors, pure minimalist shapes, seamless solid background (studio white or solid theme color).\n"
+        f"{domain_style}\n\n"
+        
+        "CRITICAL VISUAL STYLE GUIDELINES:\n"
+        "- Follow the visual aesthetic set in the Global Style Guide (e.g. clean 2D medical/pharmacy vectors, inviting classroom setups, or flat vector explainer art).\n"
         "- STRICTLY NO text, NO words, NO letters, NO labels, NO watermarks on the image.\n"
         "- Keep prompts concrete and physical (under 55 words).\n"
-        "- NO gradients, NO 3D render, NO photorealism.\n\n"
+        "- NO gradients, NO 3D render clutter, NO messy photorealism.\n\n"
 
         "TARGET IMAGE VS. REFERENCE GUIDES SEMANTICS:\n"
         "1. TARGET IMAGE (if specified): This is the base image whose composition, characters, and staging MUST BE PRESERVED. "
@@ -166,7 +173,7 @@ def refine_scene_prompt_and_script(
         f"Era: {theme_era or 'Modern'}\n"
         f"Region / Country: {theme_region or 'Cambodia'}\n"
         f"Staging Mode: {scene_staging}\n"
-        f"Global Style Guide: {global_style or '2D flat vector stickman illustration, clean black outlines, solid color fills, seamless pure white background'}\n\n"
+        f"Global Style Guide: {global_style or '2D flat vector illustration, clean black outlines, solid color fills, seamless pure white background'}\n\n"
         f"--- CURRENT SCENE STATE ---\n"
         f"Current Visual Prompt (English): {existing_prompt or '(none)'}\n"
         f"Current Voiceover (Khmer): {existing_narration or '(none)'}\n"

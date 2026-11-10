@@ -2,22 +2,12 @@ import json
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from backend.services.llm.client import generate_text
+from backend.services.llm.orchestrators.educational_domain import detect_domain, get_educational_structure_prompt
 
-def build_structured_scenes(db: Session, raw_research: str, video_concept: str, script_narrative: str, illustration_style: str, vocal_style: str) -> list:
-    system_prompt = (
-        "You are an expert production coordinator. Consolidate all provided upstream data features "
-        "and serialize them into a structural JSON sequence block. "
-        "STRICT SCHEMA RULE: The output MUST be a valid JSON array of objects perfectly adhering to the following schema:\n"
-        "[\n"
-        "  {\n"
-        "    \"scene_number\": <int>,\n"
-        "    \"narration_khmer\": <string>,\n"
-        "    \"image_prompt_english\": <string>,\n"
-        "    \"negative_prompt_english\": <string>\n"
-        "  }\n"
-        "]\n"
-        "Do not include any extra text, conversational wrappers, or markdown formatting. Return ONLY the JSON array."
-    )
+def build_structured_scenes(db: Session, raw_research: str, video_concept: str, script_narrative: str, illustration_style: str, vocal_style: str, visual_mode: str = "images") -> list:
+    combined_context = f"{raw_research}\n\n{video_concept}\n\n{script_narrative}"
+    domain = detect_domain(combined_context)
+    system_prompt = get_educational_structure_prompt(domain, visual_mode=visual_mode)
     user_content = (
         f"Raw Research:\n{raw_research}\n\n"
         f"Video Concept:\n{video_concept}\n\n"

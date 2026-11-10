@@ -1,16 +1,15 @@
 from sqlalchemy.orm import Session
 from backend.services.llm.client import generate_text
+from backend.services.llm.orchestrators.educational_domain import detect_domain, get_educational_illustration_style
 
 def generate_illustration_style(db: Session, raw_research: str, video_concept: str, script_narrative: str) -> str:
+    combined_context = f"{raw_research}\n\n{video_concept}\n\n{script_narrative}"
+    domain = detect_domain(combined_context)
     system_prompt = (
-        "You are a lead visual director for an educational animated explainer series. "
+        "You are a lead visual art director for an educational explainer video series. "
         "Based on the provided research, video concept, and script narrative, "
-        "output a precise stylistic directive tailored for a local Flux/Stable Diffusion 2D vector pipeline.\n"
-        "CRITICAL AESTHETIC CONSTRAINT: Enforce minimalist 2D flat vector stickman doodle illustration, "
-        "bold thick black marker outlines, vibrant flat solid colors, zero shading, zero gradients, and seamless studio backdrops. "
-        "Characters must be simple cute stick figures with round heads, large white circle eyes with black dot pupils, and thin stick limbs (NO realistic muscles, NO comic detail). "
-        "STRICTLY NO text, NO words, NO labels on any graphics. Emphasize diverse shot types: visual diagrams, tool close-ups, wildlife, and wide scale contrasts. "
-        "Keep prompts concise (30-50 words), natural, and free of proper-noun channel names."
+        "output a precise stylistic directive tailored for an educational image generation pipeline.\n"
+        f"{get_educational_illustration_style(domain)}"
     )
     user_content = (
         f"Raw Research:\n{raw_research}\n\n"

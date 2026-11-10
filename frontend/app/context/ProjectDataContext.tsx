@@ -153,6 +153,7 @@ export const ProjectDataProvider = ({ children }: { children: ReactNode }) => {
         scene_number: scene.scene_number,
         narration_khmer: scene.narration_khmer,
         image_prompt_english: scene.image_prompt_english,
+        video_prompt: scene.video_prompt,
         negative_prompt: scene.negative_prompt,
         image_path: scene.image_path,
         audio_path: scene.audio_path,

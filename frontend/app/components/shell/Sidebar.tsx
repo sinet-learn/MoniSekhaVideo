@@ -18,6 +18,11 @@ import {
   Film,
   Pin,
   PinOff,
+  Key,
+  Eye,
+  EyeOff,
+  ExternalLink,
+  CheckCircle2,
 } from "lucide-react";
 import { useProjectsListContext, useUIContext } from "../../context/ProjectContext";
 
@@ -34,31 +39,56 @@ export default function Sidebar() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [provider, setProvider] = useState<"gemini" | "groq">("gemini");
   const [slot, setSlot] = useState<1 | 2>(1);
-  const [imageProvider, setImageProvider] = useState<"local" | "flow">("local");
+  const [imageProvider, setImageProvider] = useState<"agy" | "local" | "cloud" | "flow">("agy");
+  const [apiKey, setApiKey] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [keysStatus, setKeysStatus] = useState<Record<string, { has_key: boolean; masked: string }>>({});
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
 
-  useEffect(() => {
+  const fetchSettings = () => {
     fetch("http://localhost:8000/api/settings")
       .then(res => res.json())
       .then(data => {
         setProvider(data.active_provider || "gemini");
         setSlot(data.active_slot || 1);
         setImageProvider(data.image_provider || "local");
+        if (data.keys_status) {
+          setKeysStatus(data.keys_status);
+        }
       })
       .catch(console.error);
+  };
+
+  useEffect(() => {
+    fetchSettings();
   }, []);
 
   const handleSaveSettings = async () => {
+    setIsSavingSettings(true);
     try {
+      const payload: any = { 
+        active_provider: provider, 
+        active_slot: slot, 
+        image_provider: imageProvider 
+      };
+      if (apiKey.trim()) {
+        payload.api_key = apiKey.trim();
+      }
+
       const res = await fetch("http://localhost:8000/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active_provider: provider, active_slot: slot, image_provider: imageProvider })
+        body: JSON.stringify(payload)
       });
       if (res.ok) {
+        setApiKey("");
+        fetchSettings();
         setIsSettingsOpen(false);
       }
     } catch (error) {
       console.error(error);
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -114,7 +144,7 @@ export default function Sidebar() {
                 <Film size={14} strokeWidth={2} />
               </div>
               <span className="font-semibold text-[14px] tracking-tight text-foreground truncate">
-                Studio
+                MoniSekha
               </span>
             </div>
             <button
@@ -508,34 +538,120 @@ export default function Sidebar() {
                 </div>
               </div>
 
+              {/* Row 2.5: API Key Input directly from UI */}
+              {(() => {
+                const currentKeyInfo = keysStatus[`${provider}_${slot}`] || { has_key: false, masked: "" };
+                return (
+                  <div className="p-3 rounded-xl bg-background/60 border border-border/50 flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <Key size={13} className="text-primary" />
+                        <span className="text-[12.5px] font-medium text-foreground">
+                          {provider === "gemini" ? "Gemini API Key" : "Groq API Key"} (Slot {slot})
+                        </span>
+                      </div>
+                      {currentKeyInfo.has_key ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
+                          <CheckCircle2 size={10} />
+                          {currentKeyInfo.masked || "Configured"}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-amber-500 font-medium">Not configured</span>
+                      )}
+                    </div>
+
+                    <div className="relative flex items-center">
+                      <input
+                        type={showApiKey ? "text" : "password"}
+                        value={apiKey}
+                        onChange={(e) => setApiKey(e.target.value)}
+                        placeholder={
+                          currentKeyInfo.has_key 
+                            ? "Paste new key to replace..." 
+                            : (provider === "gemini" ? "Paste Gemini key (AIzaSy...)" : "Paste Groq key (gsk_...)")
+                        }
+                        className="w-full h-8.5 px-3 pr-8 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-[12px] font-mono border border-border/60 text-foreground placeholder:text-panel-text focus:outline-none focus:border-primary/60 transition-colors"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowApiKey(!showApiKey)}
+                        className="absolute right-2 text-panel-text hover:text-foreground transition-colors p-1"
+                        title={showApiKey ? "Hide key" : "Show key"}
+                      >
+                        {showApiKey ? <EyeOff size={13} /> : <Eye size={13} />}
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[10.5px] text-panel-text pt-0.5">
+                      <span>Saved locally in your environment</span>
+                      <a
+                        href={provider === "gemini" ? "https://aistudio.google.com/apikey" : "https://console.groq.com/keys"}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:underline inline-flex items-center gap-1 font-medium"
+                      >
+                        Get free key <ExternalLink size={10} />
+                      </a>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Row 3: Image Synthesis Engine */}
-              <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-background/60 border border-border/50">
-                <div>
-                  <div className="text-[12.5px] font-medium text-foreground">Image Synthesis</div>
-                  <div className="text-[11px] text-panel-text">Local instance or Google Flow</div>
+              <div className="flex flex-col gap-2 p-3 rounded-xl bg-background/60 border border-border/50">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-[12.5px] font-medium text-foreground">Image Synthesis Engine</div>
+                    <div className="text-[11px] text-panel-text">Select provider for scene illustration rendering</div>
+                  </div>
+                  <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
+                    {imageProvider === "agy" ? "AGY Native" : imageProvider === "local" ? "Offline" : imageProvider === "cloud" ? "Cloud" : "MCP"}
+                  </span>
                 </div>
-                <div className="flex items-center p-0.5 bg-zinc-100 dark:bg-zinc-800/90 rounded-lg border border-border/60 shrink-0">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setImageProvider("agy")}
+                    className={`px-2 py-1.5 rounded-lg text-[11.5px] font-medium transition-all text-center cursor-pointer border ${
+                      imageProvider === "agy"
+                        ? "bg-card text-foreground shadow-2xs font-semibold border-primary/40 ring-1 ring-primary/20"
+                        : "bg-background/40 text-panel-text hover:text-foreground border-border/40"
+                    }`}
+                  >
+                    ✨ AGY API
+                  </button>
                   <button
                     type="button"
                     onClick={() => setImageProvider("local")}
-                    className={`px-2.5 py-1 rounded-md text-[11.5px] font-medium transition-all cursor-pointer ${
+                    className={`px-2 py-1.5 rounded-lg text-[11.5px] font-medium transition-all text-center cursor-pointer border ${
                       imageProvider === "local"
-                        ? "bg-card text-foreground shadow-2xs font-semibold"
-                        : "text-panel-text hover:text-foreground"
+                        ? "bg-card text-foreground shadow-2xs font-semibold border-primary/40 ring-1 ring-primary/20"
+                        : "bg-background/40 text-panel-text hover:text-foreground border-border/40"
                     }`}
                   >
-                    Draw Things
+                    💻 Draw Things
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImageProvider("cloud")}
+                    className={`px-2 py-1.5 rounded-lg text-[11.5px] font-medium transition-all text-center cursor-pointer border ${
+                      imageProvider === "cloud"
+                        ? "bg-card text-foreground shadow-2xs font-semibold border-primary/40 ring-1 ring-primary/20"
+                        : "bg-background/40 text-panel-text hover:text-foreground border-border/40"
+                    }`}
+                  >
+                    ☁️ Cloud Direct
                   </button>
                   <button
                     type="button"
                     onClick={() => setImageProvider("flow")}
-                    className={`px-2.5 py-1 rounded-md text-[11.5px] font-medium transition-all cursor-pointer ${
+                    className={`px-2 py-1.5 rounded-lg text-[11.5px] font-medium transition-all text-center cursor-pointer border ${
                       imageProvider === "flow"
-                        ? "bg-card text-foreground shadow-2xs font-semibold"
-                        : "text-panel-text hover:text-foreground"
+                        ? "bg-card text-foreground shadow-2xs font-semibold border-primary/40 ring-1 ring-primary/20"
+                        : "bg-background/40 text-panel-text hover:text-foreground border-border/40"
                     }`}
                   >
-                    Google Flow
+                    ⚡ Google Flow
                   </button>
                 </div>
               </div>

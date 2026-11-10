@@ -30,11 +30,19 @@ import {
   ZoomIn,
   ZoomOut,
   FileAudio,
+  FileText,
   X,
   GripVertical,
-  RefreshCw
+  RefreshCw,
+  Video,
+  Clapperboard,
+  VideoOff,
+  Camera,
+  Upload
 } from "lucide-react";
 import Link from "next/link";
+import { type SubtitleWords } from "../../utils/subtitleWords";
+import { SubtitleControls, SubtitlePreview, type CaptionStyle } from "../SubtitleEditor";
 
 interface AssemblyTabProps {
   activeProject: Project;
@@ -44,18 +52,32 @@ interface AssemblyTabProps {
 interface SceneCouplingItem {
   id: number;
   scene_number: number;
-  coupling_status: "ready" | "missing_audio" | "missing_image" | "uncoupled";
+  coupling_status: "ready" | "missing_audio" | "missing_image" | "uncoupled" | "overlong_audio";
   image_path: string;
   image_exists: boolean;
   image_mtime?: number;
   audio_path: string;
   audio_exists: boolean;
   audio_status: string;
+  audio_error?: string | null;
+  duration_limit_exceeded?: boolean;
+  video_status?: "idle" | "queued" | "processing" | "completed" | "failed";
+  video_error?: string | null;
+  video_prompt?: string | null;
+  video_model?: string | null;
   audio_mtime?: number;
   duration: number;
   volume: number;
   narration_khmer: string;
+  subtitle?: SubtitleWords;
   image_prompt_english: string;
+  animation?: {
+    has_video: boolean;
+    video_path?: string | null;
+    video_type?: "ai_video" | "camera_motion" | null;
+    has_ai_video?: boolean;
+    has_motion_video?: boolean;
+  };
 }
 
 interface BgmFile {
@@ -97,12 +119,19 @@ interface TimelineState {
   master_voice_volume?: number;
   master_bgm_volume: number;
   ducking: boolean;
+  animation_mode?: "camera" | "ai_video" | "none";
+  subtitle_mode?: "kinetic" | "classic" | "off";
+  subtitle_size?: "sm" | "md" | "lg";
+  subtitle_position?: "bottom" | "center" | "top";
+  subtitle_style?: Partial<CaptionStyle>;
+  scene_motions?: Record<string, "zoom_in" | "zoom_out" | "pan_left" | "pan_right" | "auto" | "none">;
 }
 
 const FONT_OPTIONS = [
   { id: "Arial, sans-serif", label: "Sans (Universal)" },
   { id: "Georgia, serif", label: "Serif (Editorial)" },
   { id: "'Impact', sans-serif", label: "Impact (Bold Title)" },
+  { id: "'Khmer OS Battambang', 'Khmer Sangam MN', 'Kantumruy Pro', sans-serif", label: "Khmer Battambang" },
   { id: "'Khmer Sangam MN', 'Kantumruy Pro', sans-serif", label: "Khmer Standard" },
 ];
 
@@ -127,11 +156,17 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
   const [bgmFiles, setBgmFiles] = useState<BgmFile[]>([]);
   const [totalDuration, setTotalDuration] = useState<number>(0);
   const [coupledCount, setCoupledCount] = useState<number>(0);
+  const [finalVideoVersion, setFinalVideoVersion] = useState(0);
   const [hasFinalVideo, setHasFinalVideo] = useState<boolean>(false);
   const [isDismissedRenderBanner, setIsDismissedRenderBanner] = useState<boolean>(false);
   const [filterMode, setFilterMode] = useState<"all" | "ready" | "incomplete">("all");
   const [isLoadingStatus, setIsLoadingStatus] = useState<boolean>(true);
   const [isUploadingBgm, setIsUploadingBgm] = useState<boolean>(false);
+  const [isBgmGenOpen, setIsBgmGenOpen] = useState<boolean>(false);
+  const [bgmPrompt, setBgmPrompt] = useState<string>("");
+  const [bgmGenDuration, setBgmGenDuration] = useState<number>(30);
+  const [isGeneratingBgm, setIsGeneratingBgm] = useState<boolean>(false);
+  const [bgmGenError, setBgmGenError] = useState<string | null>(null);
 
   // Master Voiceover & Auto-sync state
   const [masterAudioPath, setMasterAudioPath] = useState<string | null>(null);
@@ -233,6 +268,11 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
     master_voice_volume: 1.0,
     master_bgm_volume: 0.35,
     ducking: true,
+    animation_mode: "camera",
+    subtitle_mode: "kinetic",
+    subtitle_size: "md",
+    subtitle_position: "bottom",
+    scene_motions: {},
   });
 
   const [isVoiceVolOpen, setIsVoiceVolOpen] = useState<boolean>(false);
@@ -283,6 +323,8 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [auditioningSceneId, setAuditioningSceneId] = useState<number | null>(null);
 
+
+
   // Audio references
   const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
   const bgmAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -316,6 +358,7 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
         setTotalDuration(data.total_duration || 0);
         setCoupledCount(data.coupled_count || 0);
         setHasFinalVideo(data.has_final_video || false);
+        setFinalVideoVersion(data.final_video_mtime || 0);
         if (data.master_audio_path) {
           setMasterAudioPath(data.master_audio_path);
           setMasterAudioExists(Boolean(data.master_audio_exists));
@@ -369,6 +412,12 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
             master_voice_volume: data.timeline_data.master_voice_volume ?? 1.0,
             master_bgm_volume: data.timeline_data.master_bgm_volume ?? 0.35,
             ducking: data.timeline_data.ducking ?? true,
+            animation_mode: data.timeline_data.animation_mode ?? "camera",
+            subtitle_mode: data.timeline_data.subtitle_mode ?? "kinetic",
+            subtitle_size: data.timeline_data.subtitle_size ?? "md",
+            subtitle_position: data.timeline_data.subtitle_position ?? "bottom",
+            subtitle_style: data.timeline_data.subtitle_style || {},
+            scene_motions: data.timeline_data.scene_motions || {},
           });
         }
       }
@@ -388,7 +437,7 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
 
   // Auto-sync polling whenever any scene is currently processing audio in the background
   const isAnySceneProcessing = useMemo(() => {
-    return scenesData.some(s => s.audio_status === "processing" || s.audio_status === "pending");
+    return scenesData.some(s => s.audio_status === "processing" || s.audio_status === "pending" || s.video_status === "queued" || s.video_status === "processing");
   }, [scenesData]);
 
   useEffect(() => {
@@ -428,6 +477,7 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
           setRenderJob(job);
           if (job.status === "completed") {
             setHasFinalVideo(true);
+            setFinalVideoVersion(Date.now());
             setIsDismissedRenderBanner(false);
             clearInterval(interval);
           } else if (job.status === "failed") {
@@ -475,6 +525,115 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
       saveTimeoutRef.current = setTimeout(() => {
         persistTimelineState(newTimeline);
       }, 250);
+    }
+  };
+
+  // Animation controls
+  const [animatingSceneNumber, setAnimatingSceneNumber] = useState<number | null>(null);
+
+  const [animationSceneId, setAnimationSceneId] = useState<number | null>(null);
+  const [animationPrompt, setAnimationPrompt] = useState("");
+  const [animationProvider, setAnimationProvider] = useState<"camera" | "flow">("camera");
+  const [cameraMotion, setCameraMotion] = useState("auto");
+  const [animationModel, setAnimationModel] = useState("veo-lite");
+  const [isSubmittingAnimation, setIsSubmittingAnimation] = useState(false);
+  const [animationError, setAnimationError] = useState<string | null>(null);
+  const animationScene = scenesData.find((scene) => scene.id === animationSceneId);
+  const animationBusy = animationScene?.video_status === "queued" || animationScene?.video_status === "processing";
+  const animationHasInput = Boolean(animationScene?.image_exists && animationScene?.audio_exists && animationScene.audio_status === "completed" && animationScene.duration > 0);
+  const animationAspectSupported = animationProvider === "camera" || aspectRatio === "16:9" || aspectRatio === "9:16";
+
+  const openAnimationDialog = (scene: SceneCouplingItem) => {
+    setAnimationSceneId(scene.id);
+    setAnimationPrompt(scene.video_prompt || "Animate this image with subtle, natural movement. Preserve the characters, composition and illustration style. Do not add text or speech.");
+    setCameraMotion(timeline.scene_motions?.[String(scene.scene_number)] || "auto");
+    setAnimationModel(scene.video_model || "veo-lite");
+    setAnimationError(null);
+  };
+
+  const handleGenerateAnimation = async () => {
+    if (!animationScene || animationBusy || isSubmittingAnimation) return;
+    setIsSubmittingAnimation(true);
+    setAnimationError(null);
+    try {
+      const response = await fetch(`http://localhost:8000/api/scenes/${animationScene.id}/${animationProvider === "camera" ? "generate-motion" : "generate-video"}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(animationProvider === "camera" ? { motion_type: cameraMotion } : { provider: "flow", prompt: animationPrompt.trim(), model: animationModel }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "Could not start animation generation.");
+      setScenesData((prev) => prev.map((scene) => scene.id === animationScene.id ? { ...scene, video_status: result.status, video_error: null } : scene));
+      saveTimelineState({ ...timeline, animation_mode: animationProvider === "camera" ? "camera" : "ai_video" }, true);
+      await fetchAssemblyStatus();
+    } catch (error) {
+      setAnimationError(error instanceof Error ? error.message : "Could not start animation generation.");
+    } finally {
+      setIsSubmittingAnimation(false);
+    }
+  };
+
+  const handleAnimationModeChange = (mode: "camera" | "ai_video" | "none") => {
+    const updated: TimelineState = { ...timeline, animation_mode: mode };
+    saveTimelineState(updated, true);
+  };
+
+  const handleSceneMotionChange = (sceneNumber: number, motion: "zoom_in" | "zoom_out" | "pan_left" | "pan_right" | "auto" | "none") => {
+    const nextMotions = { ...(timeline.scene_motions || {}), [String(sceneNumber)]: motion };
+    const updated: TimelineState = { ...timeline, scene_motions: nextMotions };
+    saveTimelineState(updated, true);
+  };
+
+  const handleGenerateSceneMotion = async (scene: SceneCouplingItem, motionType: string = "auto") => {
+    setAnimatingSceneNumber(scene.scene_number);
+    try {
+      const res = await fetch(`http://localhost:8000/api/scenes/${scene.id}/generate-motion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ motion_type: motionType }),
+      });
+      if (res.ok) {
+        fetchAssemblyStatus(true);
+      }
+    } catch (err) {
+      console.error("Failed to generate scene motion:", err);
+    } finally {
+      setAnimatingSceneNumber(null);
+    }
+  };
+
+  const handleUploadSceneVideo = async (scene: SceneCouplingItem, file: File) => {
+    setAnimatingSceneNumber(scene.scene_number);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`http://localhost:8000/api/scenes/${scene.id}/upload-video`, {
+        method: "POST",
+        body: formData,
+      });
+      if (res.ok) {
+        fetchAssemblyStatus(true);
+      }
+    } catch (err) {
+      console.error("Failed to upload scene video:", err);
+    } finally {
+      setAnimatingSceneNumber(null);
+    }
+  };
+
+  const handleDeleteSceneVideo = async (scene: SceneCouplingItem) => {
+    setAnimatingSceneNumber(scene.scene_number);
+    try {
+      const res = await fetch(`http://localhost:8000/api/scenes/${scene.id}/animation-video`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        fetchAssemblyStatus(true);
+      }
+    } catch (err) {
+      console.error("Failed to delete scene animation video:", err);
+    } finally {
+      setAnimatingSceneNumber(null);
     }
   };
 
@@ -1155,6 +1314,52 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
     saveTimelineState(updated);
   };
 
+  // Register a BGM file in the library and append it to the timeline as a clip
+  const addBgmFileToTimeline = (uploadedFile: BgmFile) => {
+    setBgmFiles(prev => [...prev.filter(f => f.filename !== uploadedFile.filename), uploadedFile]);
+
+    // Auto-append or set BGM clip, clamped to maxTimelineDuration
+    const newClip: BgmClip = {
+      id: `bgm_${Date.now()}`,
+      relative_path: uploadedFile.relative_path,
+      filename: uploadedFile.filename,
+      start_time: 0.0,
+      duration: Math.min(uploadedFile.duration, maxTimelineDuration),
+      media_offset: 0,
+      volume: 1.0,
+    };
+    const updatedClips = [...timeline.bgm_clips, newClip];
+    saveTimelineState({
+      ...timeline,
+      bgm_clips: updatedClips,
+      bgm: updatedClips[0] || null,
+    });
+    setSelectedBgmId(newClip.id);
+    setSelectedTextId(null);
+  };
+
+  // Generate BGM locally with MusicGen
+  const handleGenerateBgm = async () => {
+    if (!bgmPrompt.trim() || isGeneratingBgm) return;
+    setIsGeneratingBgm(true);
+    setBgmGenError(null);
+    try {
+      const res = await fetch(`http://localhost:8000/api/projects/${activeProject.id}/generate-bgm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: bgmPrompt.trim(), duration: bgmGenDuration }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.detail || `Generation failed (${res.status})`);
+      addBgmFileToTimeline(result.file);
+      setIsBgmGenOpen(false);
+    } catch (err: any) {
+      setBgmGenError(err.message || "Music generation failed");
+    } finally {
+      setIsGeneratingBgm(false);
+    }
+  };
+
   // Upload BGM file
   const handleBgmUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1170,27 +1375,7 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
       });
       if (res.ok) {
         const result = await res.json();
-        const uploadedFile: BgmFile = result.file;
-        setBgmFiles(prev => [...prev.filter(f => f.filename !== uploadedFile.filename), uploadedFile]);
-        
-        // Auto-append or set BGM clip, clamped to maxTimelineDuration
-        const newClip: BgmClip = {
-          id: `bgm_${Date.now()}`,
-          relative_path: uploadedFile.relative_path,
-          filename: uploadedFile.filename,
-          start_time: 0.0,
-          duration: Math.min(uploadedFile.duration, maxTimelineDuration),
-          media_offset: 0,
-          volume: 1.0,
-        };
-        const updatedClips = [...timeline.bgm_clips, newClip];
-        saveTimelineState({
-          ...timeline,
-          bgm_clips: updatedClips,
-          bgm: updatedClips[0] || null,
-        });
-        setSelectedBgmId(newClip.id);
-        setSelectedTextId(null);
+        addBgmFileToTimeline(result.file);
       }
     } catch (err) {
       console.error("Upload BGM failed:", err);
@@ -1268,6 +1453,80 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
   return (
     <div className="flex flex-col gap-3 pb-12 animate-in fade-in slide-in-from-bottom-2 duration-300 max-w-[1880px] mx-auto select-none">
       
+      {animationScene && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setAnimationSceneId(null)}
+          onKeyDown={(event) => { if (event.key === "Escape") setAnimationSceneId(null); }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="animation-dialog-title"
+            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-2xl space-y-4 select-text"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <h2 id="animation-dialog-title" className="text-sm font-semibold">Animate Scene #{animationScene.scene_number}</h2>
+              <button type="button" aria-label="Close animation dialog" onClick={() => setAnimationSceneId(null)} className="p-1 rounded hover:bg-foreground/10"><X size={16} /></button>
+            </div>
+            {animationScene.image_exists && (
+              <img src={getAssetUrl(animationScene.image_path, animationScene.image_mtime)} alt={`Scene ${animationScene.scene_number} starting frame`} className="w-full max-h-48 object-contain rounded-lg bg-black/20" />
+            )}
+            <p className="text-xs text-panel-text">Animation follows the measured voiceover: <strong>{animationScene.duration.toFixed(2)} seconds</strong>.</p>
+            <label className="block text-xs font-medium space-y-1">
+              <span>Animation method</span>
+              <select value={animationProvider} onChange={(event) => { setAnimationProvider(event.target.value as "camera" | "flow"); setAnimationError(null); }} disabled={animationBusy || isSubmittingAnimation} className="w-full rounded-lg border border-border bg-background p-2 text-xs">
+                <option value="camera">Pan &amp; Zoom — Local</option>
+                <option value="flow">Image animation — Google Flow</option>
+              </select>
+            </label>
+            {animationProvider === "camera" && <label className="block text-xs font-medium space-y-1"><span>Camera motion</span><select value={cameraMotion} onChange={(event) => setCameraMotion(event.target.value)} className="w-full rounded-lg border border-border bg-background p-2 text-xs"><option value="auto">Auto</option><option value="zoom_in">Zoom In</option><option value="zoom_out">Zoom Out</option><option value="pan_left">Pan Left</option><option value="pan_right">Pan Right</option></select></label>}
+            {animationProvider === "flow" && <>
+            <label className="block text-xs font-medium space-y-1">
+              <span>Motion prompt</span>
+              <textarea
+                autoFocus
+                value={animationPrompt}
+                onChange={(event) => setAnimationPrompt(event.target.value)}
+                disabled={animationBusy || isSubmittingAnimation}
+                maxLength={4000}
+                rows={4}
+                className="w-full rounded-lg border border-border bg-background p-2 text-xs outline-none focus:border-primary disabled:opacity-50"
+              />
+            </label>
+            <label className="block text-xs font-medium space-y-1">
+              <span>Flow video model</span>
+              <select value={animationModel} onChange={(event) => setAnimationModel(event.target.value)} disabled={animationBusy || isSubmittingAnimation} className="w-full rounded-lg border border-border bg-background p-2 text-xs disabled:opacity-50">
+                <option value="veo-lite">Veo Lite</option>
+                <option value="veo-fast">Veo Fast</option>
+                <option value="veo-quality">Veo Quality</option>
+                <option value="veo-lite-lp">Veo Lite LP</option>
+                <option value="omni-flash">Omni Flash</option>
+                <option value="omni-1.2-flash">Omni 1.2 Flash</option>
+                <option value="omni-1.2">Omni 1.2</option>
+              </select>
+            </label>
+            <p className="text-[11px] text-panel-text">Flow animates the starting image and may use credits. The result is fitted to the measured voiceover duration. Image-to-video availability depends on your Flow interface.</p>
+            </>}
+            {!animationAspectSupported && <p role="alert" className="text-xs text-amber-500">Flow animation requires a 16:9 or 9:16 project.</p>}
+            {!animationScene.image_exists && <p role="alert" className="text-xs text-amber-500">Generate or upload a scene image first.</p>}
+            {(!animationScene.audio_exists || animationScene.audio_status !== "completed") && <p role="alert" className="text-xs text-amber-500">Generate an up-to-date voiceover before animating.</p>}
+            {(animationError || (animationProvider === "flow" && animationScene.video_error)) && <p role="alert" className="text-xs text-red-500 whitespace-pre-wrap break-words">{animationError || animationScene.video_error}</p>}
+            {animationBusy && <p role="status" className="text-xs text-primary flex items-center gap-2"><Loader2 size={13} className="animate-spin" />{animationScene.video_status === "queued" ? "Queued for animation…" : "Generating animation in Flow…"} You can close this window.</p>}
+            {animationScene.video_status === "completed" && <p role="status" className="text-xs text-emerald-500">Animation ready. Select this scene to preview it in the monitor.</p>}
+            {animationScene.animation?.has_video && <p className="text-[11px] text-panel-text">A successful generation replaces the current scene clip.</p>}
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setAnimationSceneId(null)} className="px-3 py-2 rounded-lg border border-border text-xs">Close</button>
+              <button type="button" onClick={handleGenerateAnimation} disabled={animationBusy || isSubmittingAnimation || (animationProvider === "flow" && !animationPrompt.trim()) || !animationAspectSupported || !animationHasInput} className="px-3 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-semibold disabled:opacity-50 flex items-center gap-2">
+                {isSubmittingAnimation ? <Loader2 size={12} className="animate-spin" /> : <Clapperboard size={12} />}
+                {animationProvider === "camera" ? "Create Pan & Zoom" : animationScene.animation?.has_video ? "Regenerate with Flow" : "Generate with Flow"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Hidden Audio Elements */}
       <audio ref={voiceAudioRef} preload="auto" />
       <audio 
@@ -1414,13 +1673,76 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
                       <div className="flex flex-col justify-between flex-1 min-w-0">
                         <div>
                           <div className="flex items-center justify-between gap-1 mb-1">
-                            <span className={`text-[9px] font-bold uppercase px-1.5 py-0.2 rounded ${
-                              isCoupled 
-                                ? "bg-emerald-500/15 text-emerald-500" 
-                                : "bg-amber-500/15 text-amber-500"
-                            }`}>
-                              {isCoupled ? `${scene.duration.toFixed(1)}s` : "Missing"}
-                            </span>
+                            <div className="flex items-center gap-1">
+                              <span className={`text-[9px] font-bold uppercase px-1.5 py-0.2 rounded ${
+                                isCoupled 
+                                  ? "bg-emerald-500/15 text-emerald-500" 
+                                  : "bg-amber-500/15 text-amber-500"
+                              }`}>
+                                {isCoupled ? `${scene.duration.toFixed(1)}s` : "Missing"}
+                              </span>
+
+                              {/* Per-scene Motion Selector & Video indicator */}
+                              <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                                {scene.animation?.has_video ? (
+                                  <div className="flex items-center gap-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 px-1.5 py-0.2 rounded text-[9px] font-semibold">
+                                    <Video size={9} />
+                                    <span>Clip</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteSceneVideo(scene)}
+                                      disabled={scene.video_status === "queued" || scene.video_status === "processing"}
+                                      title="Remove video clip and revert to image/motion"
+                                      className="hover:text-rose-500 transition-colors ml-0.5 cursor-pointer"
+                                    >
+                                      <X size={8} />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <select
+                                    value={timeline.scene_motions?.[String(scene.scene_number)] || "auto"}
+                                    onChange={(e) => handleSceneMotionChange(scene.scene_number, e.target.value as any)}
+                                    className="bg-background border border-border/60 rounded px-1 py-0.2 text-[9px] text-foreground font-medium outline-none cursor-pointer"
+                                    title="Scene Camera Motion"
+                                  >
+                                    <option value="auto">✨ Auto</option>
+                                    <option value="zoom_in">🔍 Zoom In</option>
+                                    <option value="zoom_out">🔭 Zoom Out</option>
+                                    <option value="pan_left">⬅️ Pan L</option>
+                                    <option value="pan_right">➡️ Pan R</option>
+                                    <option value="none">⏹️ Still</option>
+                                  </select>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={() => openAnimationDialog(scene)}
+                                  title="Animate this scene image to match its voiceover"
+                                  className="px-1 py-0.5 rounded border border-primary/25 text-primary hover:bg-primary/10 text-[9px] flex items-center gap-1"
+                                >
+                                  {scene.video_status === "queued" || scene.video_status === "processing" ? <Loader2 size={10} className="animate-spin" /> : <Clapperboard size={10} />}
+                                  {scene.video_status === "failed" ? "Retry animation" : "Animate"}
+                                </button>
+
+                                {/* Upload Video Clip directly onto scene */}
+                                <label
+                                  className="p-0.5 rounded hover:bg-foreground/5 text-foreground/50 hover:text-foreground cursor-pointer transition-colors"
+                                  title="Upload MP4 video clip for this scene"
+                                >
+                                  <Upload size={9} />
+                                  <input
+                                    type="file"
+                                    accept="video/mp4,video/webm,video/quicktime"
+                                    disabled={scene.video_status === "queued" || scene.video_status === "processing"}
+                                    className="hidden"
+                                    onChange={(e) => {
+                                      const f = e.target.files?.[0];
+                                      if (f) handleUploadSceneVideo(scene, f);
+                                    }}
+                                  />
+                                </label>
+                              </div>
+                            </div>
 
                             {/* Audition Button */}
                             {scene.audio_exists && (
@@ -1475,18 +1797,29 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
         {/* ======================================================== */}
         {/* COLUMN 2: Video Viewport + TEXT SETTINGS BELOW VIDEO     */}
         {/* ======================================================== */}
-        <div className="flex-1 min-w-0 flex flex-col gap-2 h-[480px]">
+        <div className="flex-1 min-w-0 flex flex-col gap-2 min-h-[480px]">
           
           {/* Viewport Frame */}
           <div 
             ref={videoViewportRef}
-            className="w-full bg-black rounded-xl border border-border relative flex items-center justify-center overflow-hidden flex-1 shadow-inner select-none"
+            className="w-full min-h-[300px] bg-black rounded-xl border border-border relative flex items-center justify-center overflow-hidden flex-1 shadow-inner select-none"
           >
-            {currentSceneAtPlayhead?.image_exists && currentSceneAtPlayhead.image_path ? (
+            {currentSceneAtPlayhead?.animation?.has_video && currentSceneAtPlayhead.animation.video_path ? (
+              <video
+                src={getAssetUrl(currentSceneAtPlayhead.animation.video_path)}
+                className="w-full h-full object-contain pointer-events-none"
+                autoPlay
+                loop
+                muted
+                playsInline
+              />
+            ) : currentSceneAtPlayhead?.image_exists && currentSceneAtPlayhead.image_path ? (
               <img
                 src={getAssetUrl(currentSceneAtPlayhead.image_path)}
                 alt="Active Frame"
-                className="w-full h-full object-contain pointer-events-none"
+                className={`w-full h-full object-contain pointer-events-none transition-transform duration-700 ${
+                  isPlaying && timeline.animation_mode === "camera" ? "scale-105" : "scale-100"
+                }`}
               />
             ) : (
               <div className="flex flex-col items-center justify-center text-foreground/30 p-8 text-center pointer-events-none">
@@ -1534,7 +1867,15 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
               <span className="text-white/40">|</span>
               <span>{formatTime(currentTime)} / {formatTime(maxTimelineDuration)}</span>
             </div>
+
+            <SubtitlePreview
+              text={currentSceneAtPlayhead?.narration_khmer || ""}
+              aspectRatio={aspectRatio}
+              progress={currentSceneAtPlayhead ? Math.min(0.999, Math.max(0, (currentTime - currentSceneAtPlayhead.timeline_start) / (currentSceneAtPlayhead.effective_dur || 3))) : 0}
+              value={timeline}
+            />
           </div>
+          <SubtitleControls value={timeline} onChange={patch => saveTimelineState({ ...timelineRef.current, ...patch })} />
 
           {/* TEXT SETTINGS TOOLBAR DIRECTLY BELOW VIDEO (RESTORED AS REQUESTED!) */}
           {selectedTextItem ? (
@@ -1678,10 +2019,70 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
               </div>
             </div>
 
+            {/* Scene Animation & Motion Selector */}
+            <div className="flex flex-col gap-1.5 p-2 rounded-lg bg-background/60 border border-border/50">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1 text-[11px] font-semibold text-foreground">
+                  <Clapperboard size={11} className="text-primary" />
+                  <span>Scene Motion</span>
+                </div>
+                <span className="text-[9px] uppercase font-bold text-primary px-1 py-0.2 rounded bg-primary/10">
+                  {timeline.animation_mode === "camera" ? "Pan & Zoom" : timeline.animation_mode === "ai_video" ? "AI Video" : "Static"}
+                </span>
+              </div>
+              
+              <div className="grid grid-cols-3 gap-1 p-0.5 bg-zinc-100 dark:bg-zinc-800/90 rounded-md border border-border/50 text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => handleAnimationModeChange("camera")}
+                  className={`py-1 rounded text-center font-medium transition-all cursor-pointer ${
+                    timeline.animation_mode === "camera"
+                      ? "bg-card text-foreground shadow-2xs font-semibold ring-1 ring-primary/30"
+                      : "text-panel-text hover:text-foreground"
+                  }`}
+                  title="Smooth cinematic Ken Burns camera zooms & pans"
+                >
+                  🎥 Camera
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleAnimationModeChange("ai_video")}
+                  className={`py-1 rounded text-center font-medium transition-all cursor-pointer ${
+                    timeline.animation_mode === "ai_video"
+                      ? "bg-card text-foreground shadow-2xs font-semibold ring-1 ring-primary/30"
+                      : "text-panel-text hover:text-foreground"
+                  }`}
+                  title="Generative AI video clips per scene"
+                >
+                  🤖 Video
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleAnimationModeChange("none")}
+                  className={`py-1 rounded text-center font-medium transition-all cursor-pointer ${
+                    timeline.animation_mode === "none"
+                      ? "bg-card text-foreground shadow-2xs font-semibold ring-1 ring-primary/30"
+                      : "text-panel-text hover:text-foreground"
+                  }`}
+                  title="Still slides with zero camera movement"
+                >
+                  ⏹️ Still
+                </button>
+              </div>
+
+              <p className="text-[9.5px] text-foreground/50 leading-tight">
+                {timeline.animation_mode === "camera"
+                  ? "Ken Burns zooms & pans matching speech."
+                  : timeline.animation_mode === "ai_video"
+                  ? "Use Animate on a scene to generate a Flow video, or upload a clip."
+                  : "Standard still slides held for audio duration."}
+              </p>
+            </div>
+
             {/* Export MP4 Button */}
             <button
               onClick={handleTriggerRender}
-              disabled={coupledCount === 0 || renderJob.status === "rendering"}
+              disabled={coupledCount === 0 || renderJob.status === "rendering" || scenesData.some((scene) => scene.video_status === "queued" || scene.video_status === "processing")}
               className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed mt-1"
             >
               {renderJob.status === "rendering" ? (
@@ -1716,14 +2117,14 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
 
                 <div className="flex items-center gap-1.5">
                   <a
-                    href={getAssetUrl(`${slug}/final_output.mp4`)}
+                    href={getAssetUrl(`${slug}/final_output.mp4`, finalVideoVersion || undefined)}
                     target="_blank"
                     rel="noopener noreferrer"
                     download="final_output.mp4"
                     className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded bg-emerald-500 hover:bg-emerald-600 text-white text-[11px] font-semibold transition-colors shadow-sm"
                   >
                     <Download size={11} />
-                    <span>Download</span>
+                    <span>Download MP4</span>
                   </a>
                   <button
                     onClick={handleDeleteRenderedVideo}
@@ -1732,6 +2133,31 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
                   >
                     <Trash2 size={11} />
                   </button>
+                </div>
+
+                <div className="flex items-center gap-1.5 pt-1 border-t border-emerald-500/15">
+                  <a
+                    href={`http://localhost:8000/api/projects/${activeProject.id}/subtitles`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    download={`${slug}_subtitles.srt`}
+                    className="flex-1 flex items-center justify-center gap-1 py-1 rounded bg-secondary/80 hover:bg-secondary text-foreground text-[10px] font-medium transition-colors border border-border/40"
+                    title="Download Khmer Subtitles (.srt)"
+                  >
+                    <FileText size={10} className="text-primary" />
+                    <span>Subtitles (.srt)</span>
+                  </a>
+                  <a
+                    href={`http://localhost:8000/api/projects/${activeProject.id}/lesson-handout`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    download={`${slug}_study_guide.md`}
+                    className="flex-1 flex items-center justify-center gap-1 py-1 rounded bg-secondary/80 hover:bg-secondary text-foreground text-[10px] font-medium transition-colors border border-border/40"
+                    title="Download Educational Lesson Study Guide (.md)"
+                  >
+                    <FileText size={10} className="text-amber-500" />
+                    <span>Study Guide</span>
+                  </a>
                 </div>
               </div>
             )}
@@ -1820,6 +2246,67 @@ export default function AssemblyTab({ activeProject, refreshProjectData }: Assem
               <Type size={12} className="text-purple-400" />
               <span>+ Text</span>
             </button>
+
+            <div className="relative">
+              <button
+                onClick={() => {
+                  if (!isBgmGenOpen && !bgmPrompt) setBgmGenDuration(Math.min(120, Math.max(10, Math.round(totalDuration || 30))));
+                  setIsBgmGenOpen(o => !o);
+                }}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-foreground/5 hover:bg-foreground/10 text-foreground/80 text-[11px] font-semibold transition-colors border border-border"
+                title="Generate background music with AI"
+              >
+                <Music size={12} className="text-amber-400" />
+                <span>{isGeneratingBgm ? "Generating..." : "✨ Generate"}</span>
+              </button>
+              {isBgmGenOpen && (
+                <div className="absolute top-full mt-2 left-0 z-50 w-72 bg-card border border-border rounded-xl shadow-2xl p-3 space-y-2">
+                  <div className="text-[10px] font-semibold text-panel-text uppercase tracking-wider">AI Background Music</div>
+                  <textarea
+                    value={bgmPrompt}
+                    onChange={(e) => setBgmPrompt(e.target.value)}
+                    disabled={isGeneratingBgm}
+                    rows={3}
+                    placeholder="e.g. calm cinematic ambient with soft piano"
+                    className="w-full text-[11px] bg-background border border-border rounded-lg px-2 py-1.5 outline-none focus:border-primary resize-none"
+                  />
+                  <div className="flex flex-wrap gap-1">
+                    {["Calm ambient piano", "Upbeat explainer", "Dramatic orchestral", "Lo-fi chill beat", "Mysterious documentary"].map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        disabled={isGeneratingBgm}
+                        onClick={() => setBgmPrompt(preset)}
+                        className="px-1.5 py-0.5 rounded-md bg-foreground/5 hover:bg-foreground/10 border border-border text-[10px] text-foreground/80"
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="flex items-center justify-between text-[11px] text-foreground/80">
+                    <span>Length: {bgmGenDuration}s</span>
+                    <input
+                      type="range"
+                      min="10"
+                      max="120"
+                      step="5"
+                      value={bgmGenDuration}
+                      disabled={isGeneratingBgm}
+                      onChange={(e) => setBgmGenDuration(parseInt(e.target.value))}
+                      className="w-32 accent-primary"
+                    />
+                  </label>
+                  {bgmGenError && <div className="text-[10px] text-red-400 break-words">{bgmGenError}</div>}
+                  <button
+                    onClick={handleGenerateBgm}
+                    disabled={isGeneratingBgm || !bgmPrompt.trim()}
+                    className="w-full py-1.5 rounded-lg bg-primary text-white text-[11px] font-semibold disabled:opacity-50"
+                  >
+                    {isGeneratingBgm ? "Generating… first run downloads the model" : "Generate & add to timeline"}
+                  </button>
+                </div>
+              )}
+            </div>
 
             <label className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-foreground/5 hover:bg-foreground/10 text-foreground/80 text-[11px] font-semibold transition-colors border border-border cursor-pointer">
               <Music size={12} className="text-cyan-400" />

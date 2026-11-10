@@ -1,6 +1,6 @@
-# Local Setup Guide for CavePaint
+# Local Setup Guide for MoniSekha
 
-Welcome! This guide walks you through setting up and running **CavePaint Video Studio** on your own computer from scratch.
+Welcome! This guide walks you through setting up and running **MoniSekha Video Studio** on your own computer from scratch.
 
 ---
 
@@ -95,21 +95,21 @@ npm run dev
 ```
 
 The web application is now running at:
-* **Studio UI**: [http://localhost:3000](http://localhost:3000)
+* **Studio UI**: [http://localhost:3005](http://localhost:3005)
 
-Open [http://localhost:3000](http://localhost:3000) in your web browser to start creating!
+Open [http://localhost:3005](http://localhost:3005) in your web browser to start creating!
 
 ---
 
 ## Optional: Image Generation Engines
 
-CavePaint supports multiple image generation engines. You can choose whichever you prefer directly inside the UI:
+MoniSekha supports multiple image generation engines. You can choose whichever you prefer directly inside the UI:
 
 ### Option A: Draw Things (Local Stable Diffusion on macOS)
 If you have an Apple Silicon Mac and want 100% offline image synthesis:
 1. Download [Draw Things](https://drawthings.ai/) from the macOS App Store.
 2. In Draw Things, open **Settings** and enable **API Server** on port `7860`.
-3. In CavePaint's **Images** tab, choose **Local (Draw Things)**.
+3. In MoniSekha's **Images** tab, choose **Local (Draw Things)**.
 
 ### Option B: Google Flow MCP (Cloud)
 If you want to use Google Flow:
@@ -126,7 +126,7 @@ If you want to use Google Flow:
    ```bash
    ./scripts/start_flow_daemon.sh
    ```
-4. In CavePaint's **Images** tab, choose **Google Flow (Daemon)**.
+4. In MoniSekha's **Images** tab, choose **Google Flow (Daemon)**.
    *(See [FLOW_SETUP_GUIDE.md](./FLOW_SETUP_GUIDE.md) for detailed notes).*
 
 ---
@@ -140,4 +140,4 @@ If you want to use Google Flow:
 * **API Key Error**:
   Ensure `.env.local` is in the root directory (not inside `backend/` or `frontend/`) and has no extra quotation marks around the key values.
 * **Database File**:
-  CavePaint automatically creates and migrates its SQLite database under `workspace/studio.db` when the backend starts up. You don't need to manually configure any database.
+  MoniSekha automatically creates and migrates its SQLite database under `workspace/studio.db` when the backend starts up. You don't need to manually configure any database.

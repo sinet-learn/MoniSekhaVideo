@@ -1,8 +1,8 @@
-# 🎬 CavePaint — Gemini Script & Music Prompt Generation Template
+# 🎬 MoniSekha — Gemini Script & Music Prompt Generation Template
 
 Use this template in the **Gemini Web UI** (or Claude / ChatGPT) to turn any video idea into:
 1. An **AI Background Music Prompt** custom-tailored for **Google Music (MusicFX / MusicLM)** — 100% instrumental with no lyrics, aligned with your topic.
-2. A deeply researched, fact-backed, and entertaining **Khmer narrative script** ready to paste straight into CavePaint.
+2. A deeply researched, fact-backed, and entertaining **Khmer narrative script** ready to paste straight into MoniSekha.
 
 ---
 
@@ -12,9 +12,9 @@ Use this template in the **Gemini Web UI** (or Claude / ChatGPT) to turn any vid
 3. Paste into **Gemini Web UI** (`gemini.google.com`).
 4. Gemini will output two clean sections:
    - **🎵 Google Music Prompt**: Copy this and paste into **Google MusicFX** (`aitestkitchen.withgoogle.com`) or your AI music tool to generate instrumental background audio.
-   - **📜 Khmer Narrative Script**: Copy the script directly into **CavePaint Studio (Brainstorming Tab > Narrative Script)**.
-5. Click **"Auto-Break"** in CavePaint to automatically convert each line into a scene!
-6. In CavePaint's **Assembly Tab**, import your generated background music onto the Music track!
+   - **📜 Khmer Narrative Script**: Copy the script directly into **MoniSekha Studio (Brainstorming Tab > Narrative Script)**.
+5. Click **"Auto-Break"** in MoniSekha to automatically convert each line into a scene!
+6. In MoniSekha's **Assembly Tab**, import your generated background music onto the Music track!
 
 ---
 
@@ -164,6 +164,95 @@ Atmospheric historical documentary background music, subtle ancient Khmer acoust
 យោងតាមកំណត់ត្រារបស់លោក Zhou Daguan ក្នុងឆ្នាំ 1296 ទីក្រុងអង្គរមានអាងស្តុកទឹក ឬបារាយណ៍យក្សដែលអាចផ្ទុកទឹកបានរាប់សិបលានម៉ែត្រគូប។។
 បច្ចេកវិទ្យាស្កេនឡាស៊ែរ LiDAR របស់ Greater Angkor Project បានបង្ហាញថា អង្គរជា hydraulic city ធំបំផុតនៅលើពិភពលោកក្នុងយុគសម័យកណ្តាល។។
 ប៉ុន្តែនៅពេលដែលបម្រែបម្រួលអាកាសធាតុបង្កឱ្យមានគ្រោះរាំងស្ងួតរាប់ទសវត្សរ៍ បន្ទាប់មកដោយទឹកជំនន់មហាសាល ប្រព័ន្ធទឹកដ៏ស្មុគស្មាញនេះក៏ត្រូវខូចខាត។។
+```
+
+---
+
+## 💊 4. Specialized Pharmacy Education Master Prompt (ឱសថសាស្ត្រ)
+
+Use this prompt to generate clinical, pharmacological, or medication counseling video lessons for pharmacy students and healthcare professionals:
+
+```markdown
+You are a senior clinical pharmacologist and medical education instructional designer.
+Your mission is to write a structured, evidence-based educational video lesson script in natural, spoken Khmer (ភាសាខ្មែរ) paired with an instrumental background music prompt for Google Music (MusicFX).
+
+### [PHARMACY INPUT CONFIGURATION]
+- **Drug / Topic**: [e.g. Paracetamol: យន្តការសកម្មភាព និងការប្រុងប្រយ័ត្នចំពោះថ្លើម / Acetaminophen Mechanism & Hepatotoxicity]
+- **Target Audience**: [Pharmacy students | Health professionals | Public health / Patients]
+- **Core Clinical Competencies**: [Mechanism of action (MOA) | Therapeutic dosage | ADME | Side effects & Contraindications | Patient counseling advice]
+- **Target Video Duration**: [1.5 to 2.5 minutes (~15-25 scenes)]
+- **Tone**: Professional, clear, clinical, authoritative yet accessible.
+
+### STEP 1: CLINICAL RESEARCH & GROUNDING
+- Verify accurate pharmacological data (cellular receptors, active metabolites like NAPQI, cytochrome P450 enzymes like CYP2E1, maximum daily limits like 4g/day for adults).
+- Pinpoint clinical red flags, antidotes (e.g. N-acetylcysteine), and common overdose risks.
+
+### STEP 2: SCRIPTWRITING DIRECTIVES FOR PHARMACY
+1. **Clinical Hook**: Start with a common clinical scenario or medication mistake.
+2. **Mechanism of Action (MOA)**: Explain cellular interaction in clear, stepwise language.
+3. **CRITICAL BILINGUAL NOMENCLATURE RULE**:
+   - Scientific Latin/English drug names, active molecules, receptor codes, dosages, and medical abbreviations MUST remain in English/Latin characters (e.g. `Paracetamol 500mg`, `Amoxicillin`, `NSAIDs`, `CYP2E1`, `Glutathione`, `NAPQI`, `4000mg/day`, `twice daily`, `PO`, `IV`).
+   - DO NOT transliterate drug names phonetically into Khmer (write `Paracetamol`, NOT `ប៉ារ៉ាសេតាម៉ុល`).
+   - All explanations, symptoms, physiological descriptions, and patient guidance MUST be in natural, spoken Khmer.
+4. **Patient Counseling Box**: Include 1 practical counseling sentence that a pharmacist tells a patient at the counter.
+5. **CAVEPAINT FORMATTING**:
+   - Rule 1: Every single sentence MUST end with the Khmer delimiter (`។`).
+   - Rule 2: One sentence per line (1 line = 1 visual scene).
+   - Rule 3: Zero speaker labels, zero stage directions.
+
+### STEP 3: BACKGROUND MUSIC PROMPT (GOOGLE MUSIC):
+- Instrumental medical / documentary style, calm, focus-enhancing, acoustic or subtle synthesizer ambient pads, moderate tempo (80-90 BPM), unobtrusive under voiceover, strictly no lyrics or vocals.
+
+### STRICT OUTPUT FORMAT:
+### 🎵 GOOGLE MUSIC PROMPT:
+[Ready-to-copy English prompt]
+
+### 📜 KHMER NARRATIVE SCRIPT:
+[Raw Khmer voiceover script, 1 sentence per line ending with `។`]
+```
+
+---
+
+## 🎓 5. Specialized Teacher Education Master Prompt (គរុកោសល្យ និងវិធីសាស្ត្របង្រៀន)
+
+Use this prompt to create teacher professional development videos, teaching methodology explainers, and pedagogical tutorials:
+
+```markdown
+You are a master teacher educator and pedagogical instructional designer aligned with Cambodian MoEYS standards and modern active learning frameworks.
+Your mission is to write a highly practical teacher education video script in natural Khmer (ភាសាខ្មែរ) paired with an instrumental background music prompt for Google Music (MusicFX).
+
+### [TEACHER EDUCATION INPUT CONFIGURATION]
+- **Teaching Method / Topic**: [e.g. វិធីសាស្ត្របង្រៀនសកម្ម Think-Pair-Share ក្នុងថ្នាក់រៀន / Active Learning: Think-Pair-Share]
+- **Target Audience**: [Primary / Secondary School Teachers | Teacher Trainees at NIE/PTTC]
+- **Key Competency**: [Instructional technique | Classroom management | Formative assessment | Student engagement]
+- **Target Video Duration**: [1.5 to 2 minutes (~15-20 scenes)]
+- **Tone**: Warm, encouraging, practical, empowering.
+
+### STEP 1: PEDAGOGICAL GROUNDING
+- Focus on concrete instructional steps (Teacher setup -> Student individual reflection -> Partner discussion -> Whole-class sharing).
+- Identify common classroom pitfalls (e.g. noise control, off-task students, insufficient thinking time) and provide solutions.
+
+### STEP 2: SCRIPTWRITING DIRECTIVES FOR TEACHER TRAINING
+1. **Classroom Challenge Hook**: Start with a recognizable dilemma (e.g. "Have you ever asked a question in class and met with complete silence?").
+2. **Step-by-Step Practical Demonstration**: Explain exactly what the teacher does, what the students do, and the timeframe.
+3. **MoEYS & Pedagogical Terminology**:
+   - Use standard MoEYS pedagogical terms (e.g. `វិធីសាស្ត្របង្រៀនសកម្ម`, `កិច្ចតែងការបង្រៀន`, `ការវាយតម្លៃស្ថាបនា`).
+   - On first mention of international frameworks, include the English term in parentheses (e.g. `វិធីសាស្ត្របង្រៀនសកម្ម (Active Learning)`, `ការគិត-ពិភាក្សាគូ-ចែករំលែក (Think-Pair-Share)`).
+4. **Actionable Takeaway**: Conclude with 1 simple step teachers can implement tomorrow.
+5. **CAVEPAINT FORMATTING**:
+   - Rule 1: Every sentence MUST end with the Khmer delimiter (`។`).
+   - Rule 2: One sentence per line (1 line = 1 visual scene).
+   - Rule 3: Zero speaker labels or parentheticals.
+
+### STEP 3: BACKGROUND MUSIC PROMPT (GOOGLE MUSIC):
+- Instrumental inspiring, warm, educational background music, light acoustic piano or acoustic guitar, gentle rhythm (85-95 BPM), unobtrusive under voiceover, strictly no lyrics or vocals.
+
+### STRICT OUTPUT FORMAT:
+### 🎵 GOOGLE MUSIC PROMPT:
+[Ready-to-copy English prompt]
+
+### 📜 KHMER NARRATIVE SCRIPT:
+[Raw Khmer voiceover script, 1 sentence per line ending with `។`]
 ```
 
 

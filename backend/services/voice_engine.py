@@ -1,5 +1,8 @@
 import os
 import gc
+import hashlib
+from .scene_timing import write_scene_audio
+from .khmer_text import prepare_tts_text
 import asyncio
 import threading
 import time
@@ -14,40 +17,104 @@ except ImportError:
 
 _MODEL_STATE = "unloaded"
 _VOXCPM_MODEL = None
+_LOADED_LANGUAGE = None
 _UNLOAD_TASK = None
 _LAST_ACTIVITY_TIME = time.time()
 _LOAD_LOCK = threading.Lock()
+_CHARACTER_REFERENCE_LOCK = threading.Lock()
 _MAIN_EVENT_LOOP = None
+
+def get_model_download_progress():
+    """Extracts live Hugging Face download progress for VoxCPM2 weights."""
+    total_bytes = 4580080592  # 4.58 GB
+    xet_log_dir = os.path.expanduser("~/.cache/huggingface/xet/logs")
+    if os.path.exists(xet_log_dir):
+        import glob
+        import re
+        logs = sorted(glob.glob(os.path.join(xet_log_dir, "xet_*.log")), key=os.path.getmtime, reverse=True)
+        if logs:
+            latest = logs[0]
+            try:
+                with open(latest, "rb") as f:
+                    f.seek(max(0, os.path.getsize(latest) - 8192))
+                    lines = f.read().decode("utf-8", errors="ignore").splitlines()
+                    for line in reversed(lines):
+                        if "observed bytes sent so far" in line:
+                            m = re.search(r"observed bytes sent so far = (\d+)", line)
+                            if m:
+                                cur = int(m.group(1))
+                                pct = min(99, int((cur / total_bytes) * 100))
+                                return {
+                                    "is_downloading": True,
+                                    "downloaded_bytes": cur,
+                                    "total_bytes": total_bytes,
+                                    "percent": pct,
+                                    "downloaded_str": f"{cur / (1024**3):.2f} GB",
+                                    "total_str": f"{total_bytes / (1024**3):.2f} GB"
+                                }
+            except Exception:
+                pass
+    return None
+
+KHMER_SEED_TEXT = "កាលពី ១ម៉ឺនឆ្នាំមុន មនុស្សសម័យបុរេប្រវត្តិ បានរកឃើញអាថ៌កំបាំងមួយយ៉ាងអស្ចារ្យ។"
+ENGLISH_SEED_TEXT = "Ten thousand years ago, early humans made a remarkable discovery that would change everything."
+
+
+def detect_language(text: str) -> str:
+    """'km' when the text contains any Khmer script, otherwise 'en'."""
+    return "km" if any("\u1780" <= ch <= "\u17ff" for ch in text or "") else "en"
+
+
+def _model_name(language: str) -> str:
+    if language == "en":
+        return os.getenv("VOXCPM_EN_MODEL_NAME", "openbmb/VoxCPM2")
+    return os.getenv("VOXCPM_MODEL_NAME", "ravuthz/VoxCPM2-khmer")
+
+
+def _seed_text(language: str) -> str:
+    return ENGLISH_SEED_TEXT if language == "en" else KHMER_SEED_TEXT
+
+
+def _prepare_text(text: str, language: str) -> str:
+    return " ".join(text.split()) if language == "en" else prepare_tts_text(text)
+
 
 def set_event_loop(loop):
     global _MAIN_EVENT_LOOP
     _MAIN_EVENT_LOOP = loop
 
-def load_model() -> bool:
-    global _MODEL_STATE, _VOXCPM_MODEL, _LAST_ACTIVITY_TIME
+def load_model(language: str = "km") -> bool:
+    """Load the model for `language`, swapping out a different one first (one model in memory at a time)."""
+    global _MODEL_STATE, _VOXCPM_MODEL, _LAST_ACTIVITY_TIME, _LOADED_LANGUAGE
     with _LOAD_LOCK:
         _LAST_ACTIVITY_TIME = time.time()
-        
+
         if _MODEL_STATE == "loaded" and _VOXCPM_MODEL is not None:
-            _cancel_unload_task()
-            return True
-            
+            if _LOADED_LANGUAGE in (None, language):
+                _cancel_unload_task()
+                return True
+            _unload_locked()
+
         _MODEL_STATE = "loading"
         print("Loading VoxCPM Model into Unified Memory...")
         try:
             if VoxCPM is not None:
-                _VOXCPM_MODEL = VoxCPM.from_pretrained("ravuthz/VoxCPM2-khmer", load_denoiser=False)
+                model_name = _model_name(language)
+                print(f"Loading VoxCPM model from: {model_name}...")
+                _VOXCPM_MODEL = VoxCPM.from_pretrained(model_name, load_denoiser=False)
             else:
                 print("voxcpm module not found, mocking load.")
                 _VOXCPM_MODEL = "MockModelData"
             _MODEL_STATE = "loaded"
+            _LOADED_LANGUAGE = language
             print("VoxCPM Model loaded successfully.")
         except Exception as e:
             _MODEL_STATE = "unloaded"
             _VOXCPM_MODEL = None
+            _LOADED_LANGUAGE = None
             print(f"Failed to load VoxCPM Model: {e}")
             raise e
-        
+
         _cancel_unload_task()
         return True
 
@@ -88,29 +155,34 @@ def schedule_unload():
     except Exception as e:
         print(f"Failed to schedule unload task: {e}")
 
-def unload_model() -> bool:
-    global _MODEL_STATE, _VOXCPM_MODEL
-    with _LOAD_LOCK:
-        if _MODEL_STATE == "unloaded":
-            return True
-            
-        _MODEL_STATE = "unloading"
-        print("Unloading VoxCPM Model to recover Unified Memory...")
-        _VOXCPM_MODEL = None
-        
-        # Explicit garbage collection
-        gc.collect()
-        
-        # PyTorch device cache flusher
-        if torch.backends.mps.is_available():
-            torch.mps.empty_cache()
-            print("MPS cache cleared.")
-        elif torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            print("CUDA cache cleared.")
-            
-        _MODEL_STATE = "unloaded"
+def _unload_locked() -> bool:
+    global _MODEL_STATE, _VOXCPM_MODEL, _LOADED_LANGUAGE
+    if _MODEL_STATE == "unloaded":
         return True
+
+    _MODEL_STATE = "unloading"
+    print("Unloading VoxCPM Model to recover Unified Memory...")
+    _VOXCPM_MODEL = None
+    _LOADED_LANGUAGE = None
+
+    # Explicit garbage collection
+    gc.collect()
+
+    # PyTorch device cache flusher
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+        print("MPS cache cleared.")
+    elif torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print("CUDA cache cleared.")
+
+    _MODEL_STATE = "unloaded"
+    return True
+
+
+def unload_model() -> bool:
+    with _LOAD_LOCK:
+        return _unload_locked()
 
 def trim_audio_silence(
     audio_data: np.ndarray,
@@ -143,11 +215,11 @@ def trim_audio_silence(
 
     return audio_data[start_idx:end_idx]
 
-def generate_scene_audio_chunk(text: str, project_slug: str, profile_tag: str, scene_number: int, audio_format: str = "wav"):
+def generate_scene_audio_chunk(text: str, project_slug: str, profile_tag: str, scene_number: int, audio_format: str = "wav", cfg_value: float = 2.0, inference_steps: int = 15):
     global _MODEL_STATE, _LAST_ACTIVITY_TIME, _VOXCPM_MODEL
     
-    if _MODEL_STATE != "loaded":
-        load_model()
+    language = detect_language(text)
+    load_model(language)
         
     _LAST_ACTIVITY_TIME = time.time()
     
@@ -155,8 +227,8 @@ def generate_scene_audio_chunk(text: str, project_slug: str, profile_tag: str, s
     project_dir = os.path.join(workspace_dir, project_slug)
     os.makedirs(project_dir, exist_ok=True)
     
-    seed_path = os.path.join(project_dir, "voice_profile_seed.wav")
-    seed_text = "កាលពី ១ម៉ឺនឆ្នាំមុន មនុស្សសម័យបុរេប្រវត្តិ បានរកឃើញអាថ៌កំបាំងមួយយ៉ាងអស្ចារ្យ។"
+    seed_path = os.path.join(project_dir, f"voice_profile_{hashlib.sha256((f'{profile_tag}|{cfg_value}|{inference_steps}' + ('|en' if language == 'en' else '')).encode('utf-8')).hexdigest()[:16]}.wav")
+    seed_text = _seed_text(language)
     
     sample_rate = _VOXCPM_MODEL.tts_model.sample_rate if hasattr(_VOXCPM_MODEL, 'tts_model') and hasattr(_VOXCPM_MODEL.tts_model, 'sample_rate') else 22050
     
@@ -165,11 +237,11 @@ def generate_scene_audio_chunk(text: str, project_slug: str, profile_tag: str, s
         print(f"Generating Voice Design Seed Profile for {project_slug}...")
         if VoxCPM is not None and hasattr(_VOXCPM_MODEL, 'generate'):
             # Real model call
-            design_prompt = f"{profile_tag}{seed_text}"
+            design_prompt = f"{profile_tag}{_prepare_text(seed_text, language)}"
             seed_audio = _VOXCPM_MODEL.generate(
                 text=design_prompt,
-                cfg_value=2.0,
-                inference_timesteps=15
+                cfg_value=cfg_value,
+                inference_timesteps=inference_steps
             )
         else:
             # Mock audio for testing
@@ -196,11 +268,11 @@ def generate_scene_audio_chunk(text: str, project_slug: str, profile_tag: str, s
         
     if VoxCPM is not None and hasattr(_VOXCPM_MODEL, 'generate'):
         raw_audio = _VOXCPM_MODEL.generate(
-            text=text,
+            text=_prepare_text(text, language),
             prompt_wav_path=seed_path,
-            prompt_text=seed_text,
-            cfg_value=2.0,
-            inference_timesteps=15
+            prompt_text=_prepare_text(seed_text, language),
+            cfg_value=cfg_value,
+            inference_timesteps=inference_steps
         )
     else:
         duration = 1.5
@@ -235,20 +307,18 @@ def generate_scene_audio_chunk(text: str, project_slug: str, profile_tag: str, s
     extension = "mp3" if audio_format.lower() == "mp3" else "wav"
     save_path = os.path.join(project_dir, f"scene_{padded_scene_number}.{extension}")
     
-    try:
-        sf.write(save_path, padded_audio, sample_rate)
-    except Exception as e:
-        print(f"Failed to write padded audio: {e}")
+    schedule_unload()
+    write_scene_audio(save_path, padded_audio, sample_rate)
 
     _LAST_ACTIVITY_TIME = time.time()
     schedule_unload()
     return save_path
 
-def generate_single_scene_audio(text: str, project_slug: str, scene_number: int, reference_audio_path: str = None, reference_text: str = None, audio_format: str = "wav", profile_tag: str = "(Male, Adult, Documentary tone, Normal speed)"):
+def generate_single_scene_audio(text: str, project_slug: str, scene_number: int, reference_audio_path: str = None, reference_text: str = None, audio_format: str = "wav", profile_tag: str = "(Male, Adult, Documentary tone, Normal speed)", cfg_value: float = 2.0, inference_steps: int = 15):
     global _MODEL_STATE, _LAST_ACTIVITY_TIME, _VOXCPM_MODEL
     
-    if _MODEL_STATE != "loaded":
-        load_model()
+    language = detect_language(text)
+    load_model(language)
         
     _LAST_ACTIVITY_TIME = time.time()
     
@@ -262,17 +332,17 @@ def generate_single_scene_audio(text: str, project_slug: str, scene_number: int,
         seed_path = reference_audio_path
         seed_text = reference_text
     else:
-        seed_path = os.path.join(project_dir, "voice_profile_seed.wav")
-        seed_text = "កាលពី ១ម៉ឺនឆ្នាំមុន មនុស្សសម័យបុរេប្រវត្តិ បានរកឃើញអាថ៌កំបាំងមួយយ៉ាងអស្ចារ្យ។"
+        seed_path = os.path.join(project_dir, f"voice_profile_{hashlib.sha256((f'{profile_tag}|{cfg_value}|{inference_steps}' + ('|en' if language == 'en' else '')).encode('utf-8')).hexdigest()[:16]}.wav")
+        seed_text = _seed_text(language)
         if not os.path.exists(seed_path):
             print(f"Auto-generating Voice Design Seed Profile for single scene in {project_slug}...")
             if VoxCPM is not None and hasattr(_VOXCPM_MODEL, 'generate'):
                 tag = profile_tag or "(Male, Adult, Documentary tone, Normal speed)"
-                design_prompt = f"{tag}{seed_text}"
+                design_prompt = f"{tag}{_prepare_text(seed_text, language)}"
                 seed_audio = _VOXCPM_MODEL.generate(
                     text=design_prompt,
-                    cfg_value=2.0,
-                    inference_timesteps=15
+                    cfg_value=cfg_value,
+                    inference_timesteps=inference_steps
                 )
             else:
                 duration = 1.0
@@ -295,11 +365,11 @@ def generate_single_scene_audio(text: str, project_slug: str, scene_number: int,
         
     if VoxCPM is not None and hasattr(_VOXCPM_MODEL, 'generate'):
         raw_audio = _VOXCPM_MODEL.generate(
-            text=text,
+            text=_prepare_text(text, language),
             prompt_wav_path=seed_path,
-            prompt_text=seed_text,
-            cfg_value=2.0,
-            inference_timesteps=15
+            prompt_text=_prepare_text(seed_text, detect_language(seed_text)),
+            cfg_value=cfg_value,
+            inference_timesteps=inference_steps
         )
     else:
         duration = 1.5
@@ -331,10 +401,8 @@ def generate_single_scene_audio(text: str, project_slug: str, scene_number: int,
     extension = "mp3" if audio_format.lower() == "mp3" else "wav"
     save_path = os.path.join(project_dir, f"scene_{padded_scene_number}.{extension}")
     
-    try:
-        sf.write(save_path, padded_audio, sample_rate)
-    except Exception as e:
-        print(f"Failed to write single scene audio: {e}")
+    schedule_unload()
+    write_scene_audio(save_path, padded_audio, sample_rate)
 
     _LAST_ACTIVITY_TIME = time.time()
     schedule_unload()
@@ -433,11 +501,11 @@ def compile_master_voiceover(project_id: int, db_session):
     else:
         print("No valid audio segments found to concatenate.")
 
-def generate_character_preview(personality_tag: str, reference_text: str) -> str:
+def generate_character_preview(personality_tag: str, reference_text: str, cfg_value: float = 2.0, inference_steps: int = 15, *, character_id: int = None) -> str:
     global _MODEL_STATE, _LAST_ACTIVITY_TIME, _VOXCPM_MODEL
     
-    if _MODEL_STATE != "loaded":
-        load_model()
+    language = detect_language(reference_text)
+    load_model(language)
         
     _LAST_ACTIVITY_TIME = time.time()
     
@@ -445,9 +513,10 @@ def generate_character_preview(personality_tag: str, reference_text: str) -> str
     shared_characters_dir = os.path.join(workspace_dir, "shared_characters")
     os.makedirs(shared_characters_dir, exist_ok=True)
     
-    save_path = os.path.join(shared_characters_dir, "temp_preview.wav")
+    filename = f"character_{int(character_id)}.wav" if character_id is not None else "temp_preview.wav"
+    save_path = os.path.join(shared_characters_dir, filename)
     
-    design_prompt = f"{personality_tag}{reference_text}"
+    design_prompt = f"{personality_tag}{_prepare_text(reference_text, language)}"
     sample_rate = _VOXCPM_MODEL.tts_model.sample_rate if hasattr(_VOXCPM_MODEL, 'tts_model') and hasattr(_VOXCPM_MODEL.tts_model, 'sample_rate') else 22050
     
     print(f"Generating Character Preview... Prompt: {design_prompt}")
@@ -455,8 +524,8 @@ def generate_character_preview(personality_tag: str, reference_text: str) -> str
     if VoxCPM is not None and hasattr(_VOXCPM_MODEL, 'generate'):
         raw_audio = _VOXCPM_MODEL.generate(
             text=design_prompt,
-            cfg_value=2.0,
-            inference_timesteps=15
+            cfg_value=cfg_value,
+            inference_timesteps=inference_steps
         )
     else:
         duration = 1.0
@@ -470,21 +539,34 @@ def generate_character_preview(personality_tag: str, reference_text: str) -> str
     audio_data = np.clip(audio_data, -1.0, 1.0)
     audio_data = trim_audio_silence(audio_data, sample_rate, threshold=0.01, lead_in_ms=45.0, trail_cushion_ms=50.0)
     
-    try:
-        sf.write(save_path, audio_data, sample_rate)
-    except Exception as e:
-        print(f"Failed to write preview audio: {e}")
+    sf.write(save_path, audio_data, sample_rate)
         
     _LAST_ACTIVITY_TIME = time.time()
     schedule_unload()
     
-    return "shared_characters/temp_preview.wav"
+    return f"shared_characters/{filename}"
 
-def generate_clone_preview(reference_audio_path: str, reference_text: str, text_to_speak: str = "កាលពី ១ម៉ឺនឆ្នាំមុន មនុស្សសម័យបុរេប្រវត្តិ បានរកឃើញអាថ៌កំបាំងមួយយ៉ាងអស្ចារ្យ។") -> str:
+def ensure_character_reference(character_id: int, personality_tag: str, reference_text: str,
+                               cfg_value: float = 2.0, inference_steps: int = 15) -> str:
+    """Design once, then reuse the same speaker sample in every project."""
+    relative_path = f"shared_characters/character_{int(character_id)}.wav"
+    workspace_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "workspace"))
+    with _CHARACTER_REFERENCE_LOCK:
+        if os.path.isfile(os.path.join(workspace_dir, relative_path)):
+            return relative_path
+        return generate_character_preview(
+            personality_tag, reference_text, cfg_value, inference_steps,
+            character_id=character_id,
+        )
+
+
+def generate_clone_preview(reference_audio_path: str, reference_text: str, text_to_speak: str = "កាលពី ១ម៉ឺនឆ្នាំមុន មនុស្សសម័យបុរេប្រវត្តិ បានរកឃើញអាថ៌កំបាំងមួយយ៉ាងអស្ចារ្យ។", cfg_value: float = 2.0, inference_steps: int = 15) -> str:
     global _MODEL_STATE, _LAST_ACTIVITY_TIME, _VOXCPM_MODEL
     
-    if _MODEL_STATE != "loaded":
-        load_model()
+    language = detect_language(reference_text)
+    if language == "en" and detect_language(text_to_speak) == "km":
+        text_to_speak = ENGLISH_SEED_TEXT  # default sample is Khmer; match the reference voice language
+    load_model(language)
         
     _LAST_ACTIVITY_TIME = time.time()
     
@@ -499,11 +581,11 @@ def generate_clone_preview(reference_audio_path: str, reference_text: str, text_
     
     if VoxCPM is not None and hasattr(_VOXCPM_MODEL, 'generate'):
         raw_audio = _VOXCPM_MODEL.generate(
-            text=text_to_speak,
+            text=_prepare_text(text_to_speak, language),
             prompt_wav_path=reference_audio_path,
-            prompt_text=reference_text,
-            cfg_value=2.0,
-            inference_timesteps=15
+            prompt_text=_prepare_text(reference_text, language),
+            cfg_value=cfg_value,
+            inference_timesteps=inference_steps
         )
     else:
         duration = 1.0

@@ -33,8 +33,13 @@ import {
   Maximize2,
   Minimize2,
   GripVertical,
-  Clock
+  Clock,
+  Loader2,
+  Zap,
+  Wand2,
+  Lightbulb
 } from "lucide-react";
+import { splitNarrationIntoScenes } from "../../utils/sceneTiming";
 import { estimateTextStats } from "../../utils/textStats";
 
 interface BrainstormingTabProps {
@@ -438,6 +443,128 @@ export function getEraRegionSetting(eraId: string, regionId: string): EraRegionD
   };
 }
 
+// Art style presets: drive the core style formula, character design and negative prompt in the scene prompt
+type ArtStyle = {
+  id: string;
+  label: string;
+  mood: string;
+  bestFor: string;
+  formula: string;
+  character: string;
+  negative: string;
+  shading: boolean; // true when the style intentionally uses texture/shading (disables the "zero shading" language)
+};
+
+const ART_STYLES: ArtStyle[] = [
+  {
+    id: "stickman",
+    label: "Stickman Doodle",
+    mood: "Friendly, clear, explainer-style",
+    bestFor: "Educational explainers, history, how-things-work",
+    formula: "Minimalist 2D flat vector stickman doodle illustration, clean thick bold black marker outlines, flat solid color fills, zero shading, zero gradients, zero shadows, pure simple minimalist shapes",
+    character: `- Round circle head filled with simple skin tone.
+- Two large round white cartoon eyes with black dot pupils.
+- Simple expressive line eyebrows and mouth (e.g. smiling, wide shock, determined).
+- Simple rounded torso wearing flat-colored attire: {attire}.
+- Thin black stick-line arms and legs (pure stickman limbs).
+- ABSOLUTELY NO muscular detail, NO realistic face, NO gritty comic book shading, NO crosshatching.`,
+    negative: "comic book, gritty, realistic, muscular, detailed anatomy, 3D, render, shading, gradients, shadows, photorealistic",
+    shading: false,
+  },
+  {
+    id: "anime",
+    label: "Anime",
+    mood: "Expressive, vibrant, cinematic",
+    bestFor: "Drama, adventure, modern stories, youth audiences",
+    formula: "Japanese anime illustration, clean crisp line art, cel-shaded flat color with soft two-tone shadows, vibrant saturated palette, expressive large eyes, painterly anime background, soft cinematic lighting, Studio-quality key visual",
+    character: `- Anime-proportioned characters (slightly stylized, large expressive eyes, simple detailed hair with highlights, small nose and mouth).
+- Dynamic, readable poses and clear emotion in the face and body language.
+- Cel-shaded clothing in flat colors with simple fold lines, wearing: {attire}.
+- Consistent character design (hair, outfit, colors) across every scene.
+- NO photorealistic skin, NO western comic style, NO 3D render look.`,
+    negative: "photorealistic, 3D render, western comic, deformed hands, extra fingers, bad anatomy, blurry, lowres, muddy colors",
+    shading: true,
+  },
+  {
+    id: "gothic_noir",
+    label: "Gothic Noir",
+    mood: "Paranoia, mystery, dread",
+    bestFor: "Detective stories, urban crime, psychological horror",
+    formula: "Gothic noir graphic illustration, high-contrast black and white with deep ink shadows, dramatic chiaroscuro, long cast shadows, rain-slicked streets, fog and moody backlight, single accent color (muted red or sickly yellow), angular architecture",
+    character: `- Silhouetted figures with sharp angular shapes, long coats and hats, faces half-hidden in shadow, wearing: {attire}.
+- Dramatic low-key lighting; characters often backlit or lit by a single lamp or window.
+- Minimal facial detail; mood is carried by posture and shadow.
+- NO bright cheerful colors, NO cartoon faces.`,
+    negative: "bright cheerful colors, pastel, cartoon, cute, flat even lighting, photorealistic, text, watermark",
+    shading: true,
+  },
+  {
+    id: "paper_cutout",
+    label: "Paper Cutout",
+    mood: "Fable-like, nostalgic, theatrical",
+    bestFor: "Folktales, oral histories, children's fables",
+    formula: "Layered paper cutout collage illustration, handmade cut paper shapes with visible paper grain and subtle edge shadows between layers, stage-like diorama depth, warm limited color palette, theatrical staging",
+    character: `- Characters built from simple cut paper shapes (round head, folded-paper clothing, jointed limbs), wearing: {attire}.
+- Visible layering: each element sits on its own paper layer with a soft drop shadow.
+- Simple dot or cut-out eyes, minimal expression.
+- NO glossy surfaces, NO digital gradients, NO photorealism.`,
+    negative: "photorealistic, glossy, 3D render, digital gradients, thin line art, neon, text, watermark",
+    shading: true,
+  },
+  {
+    id: "soft_geometric",
+    label: "Soft Geometric",
+    mood: "Warm, earnest, emotionally disarming",
+    bestFor: "Coming-of-age, interpersonal dramedy, fantasy adventures",
+    formula: "Soft geometric flat illustration, rounded simple shapes (circles, soft rectangles, arcs), warm harmonious pastel palette, gentle subtle grain, no outlines, calm balanced composition, friendly storybook feel",
+    character: `- Characters made of rounded geometric forms: circle head, soft pill-shaped body, tiny dot eyes and gentle smile, wearing: {attire}.
+- No outlines; shapes defined by color blocks only.
+- Warm, gentle expressions and cozy body language.
+- NO sharp edges, NO realistic anatomy, NO harsh shadows.`,
+    negative: "outlines, sharp edges, harsh shadows, photorealistic, gritty, realistic anatomy, dark, text, watermark",
+    shading: false,
+  },
+  {
+    id: "woodblock",
+    label: "Woodblock / Linocut",
+    mood: "Archaic, heavy, fateful",
+    bestFor: "Historical chronicles, mythic legends, grim fables",
+    formula: "Woodblock print and linocut illustration, bold carved black lines, rough hand-carved texture, limited palette of 2-3 flat ink colors on aged paper, visible ink irregularities, strong graphic composition, stylized mythic imagery",
+    character: `- Stylized, heavy-set figures with carved angular outlines and solid ink fills, wearing: {attire}.
+- Hatching and gouge marks used for shadows and folds.
+- Solemn, monumental poses like a historical chronicle plate.
+- NO soft gradients, NO photorealism, NO digital polish.`,
+    negative: "photorealistic, soft gradients, digital polish, neon colors, 3D render, anime, text, watermark",
+    shading: true,
+  },
+  {
+    id: "watercolor",
+    label: "Watercolor Sketch",
+    mood: "Poetic, fragile, bittersweet",
+    bestFor: "Memoirs, philosophical shorts, childhood memories",
+    formula: "Loose watercolor and ink sketch illustration, soft bleeding washes, delicate pencil and ink linework, visible paper texture, muted faded palette, unpainted white paper edges, dreamy atmospheric light",
+    character: `- Gently sketched figures with loose ink lines and translucent watercolor washes, wearing: {attire}.
+- Soft, slightly imperfect proportions; faces simple and tender.
+- Color bleeds past the outlines in places.
+- NO hard digital edges, NO saturated neon colors, NO photorealism.`,
+    negative: "hard digital edges, neon, photorealistic, 3D render, heavy black outlines, vector flat, text, watermark",
+    shading: true,
+  },
+  {
+    id: "low_poly",
+    label: "Low-Poly Geometric",
+    mood: "Analytical, stark, futuristic",
+    bestFor: "Cyberpunk, mathematical metaphors, dystopian narratives",
+    formula: "Low-poly geometric illustration, faceted triangular polygons, flat-shaded facets with sharp angular edges, cold limited palette with neon accent glow, stark minimalist composition, clean digital look",
+    character: `- Characters modeled from visible triangular facets with simple angular faces, wearing: {attire}.
+- Flat-shaded polygons; each facet a single color, no smooth blending.
+- Stark, still poses suggesting a cold, analytical world.
+- NO organic curves, NO realistic textures, NO hand-drawn look.`,
+    negative: "organic curves, smooth gradients, realistic textures, hand-drawn, watercolor, photorealistic, text, watermark",
+    shading: true,
+  },
+];
+
 // Preset Atmosphere & Solid Backdrop Color Palettes (Pure Studio White as default)
 const MOOD_OPTIONS = [
   { id: "pure_white", label: "Pure Studio White", shortLabel: "Pure White", color: "#ffffff", desc: "Crisp clean pure white background, signature YouTube explainer aesthetic" },
@@ -499,11 +626,15 @@ function AutoResizeTextarea({
   onBlur,
   className,
   placeholder,
+  disabled = false,
+  onChange,
 }: {
   defaultValue: string;
   onBlur: (val: string) => void;
   className: string;
   placeholder?: string;
+  disabled?: boolean;
+  onChange?: (value: string) => void;
 }) {
   const [val, setVal] = useState(defaultValue || "");
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -523,9 +654,10 @@ function AutoResizeTextarea({
     <textarea
       ref={ref}
       value={val}
+      disabled={disabled}
       draggable={false}
       onMouseDown={(e) => e.stopPropagation()}
-      onChange={(e) => setVal(e.target.value)}
+      onChange={(e) => { setVal(e.target.value); onChange?.(e.target.value); }}
       onBlur={() => {
         if (val !== (defaultValue || "")) {
           onBlur(val);
@@ -540,8 +672,21 @@ function AutoResizeTextarea({
 
 export default function BrainstormingTab({ activeProject, refreshProjectData }: BrainstormingTabProps) {
   const { updateActiveProject, updateSingleScene, reorderScenes } = useProjectContext();
+  const [planningImageId, setPlanningImageId] = useState<number | null>(null);
+  const [planningError, setPlanningError] = useState<string | null>(null);
+  const hasActiveVideoJobs = (activeProject?.scenes || []).some((scene: any) => scene.video_status === "queued" || scene.video_status === "processing");
+  const handlePlanImage = async (sceneId: number) => {
+    setPlanningImageId(sceneId);
+    setPlanningError(null);
+    try {
+      const response = await fetch(`http://localhost:8000/api/scenes/${sceneId}/plan-image`, { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "Could not plan the scene image.");
+      await refreshProjectData?.();
+    } catch (error) { setPlanningError(error instanceof Error ? error.message : "Could not plan the scene image."); }
+    finally { setPlanningImageId(null); }
+  };
 
-  // Scene reorder drag & drop states
   const [draggedSceneIdx, setDraggedSceneIdx] = useState<number | null>(null);
   const [dragOverSceneIdx, setDragOverSceneIdx] = useState<number | null>(null);
   const [dropPosition, setDropPosition] = useState<"before" | "after" | null>(null);
@@ -614,7 +759,7 @@ export default function BrainstormingTab({ activeProject, refreshProjectData }: 
   };
 
   // Custom dropdown popovers state & click-outside refs
-  const [openDropdown, setOpenDropdown] = useState<"era" | "region" | "staging" | "ratio" | "mood" | "batch" | "batchSize" | null>(null);
+  const [openDropdown, setOpenDropdown] = useState<"era" | "region" | "style" | "staging" | "ratio" | "mood" | "batch" | "batchSize" | null>(null);
   const styleBarRef = useRef<HTMLDivElement>(null);
   const batchDropdownRef = useRef<HTMLDivElement>(null);
   const batchSizeRef = useRef<HTMLDivElement>(null);
@@ -635,6 +780,7 @@ export default function BrainstormingTab({ activeProject, refreshProjectData }: 
   const [selectedMood, setSelectedMood] = useState("pure_white");
   const [selectedAspectRatio, setSelectedAspectRatio] = useState("16:9");
   const [characterAttire, setCharacterAttire] = useState("");
+  const [selectedArtStyle, setSelectedArtStyle] = useState("stickman");
   const [sceneStaging, setSceneStaging] = useState<"studio" | "environment">("studio");
   const [customSetting, setCustomSetting] = useState("");
   const [splitMode, setSplitMode] = useState<"enter" | "sentence">(() => {
@@ -681,6 +827,22 @@ export default function BrainstormingTab({ activeProject, refreshProjectData }: 
   const [isImporting, setIsImporting] = useState(false);
   const [importSuccessMessage, setImportSuccessMessage] = useState<string | null>(null);
 
+  // In-App Direct AI Generation & Quick Segmentation state
+  const [isAutoGenerating, setIsAutoGenerating] = useState(false);
+  const [autoGenError, setAutoGenError] = useState<string | null>(null);
+  const [autoGenSuccess, setAutoGenSuccess] = useState<string | null>(null);
+  const [isSplitting, setIsSplitting] = useState(false);
+
+  // Prompt to Script state (Turn Idea/Prompt into full Khmer narrative script)
+  const [promptInput, setPromptInput] = useState("");
+  const [promptTargetLength, setPromptTargetLength] = useState<"short" | "medium" | "detailed">("medium");
+  const [promptDomain, setPromptDomain] = useState<"auto" | "pharmacy" | "teacher_education" | "general">("auto");
+  const [promptTone, setPromptTone] = useState<"educational" | "storytelling" | "conversational">("educational");
+  const [isGeneratingScript, setIsGeneratingScript] = useState(false);
+  const [scriptGenError, setScriptGenError] = useState<string | null>(null);
+  const [scriptGenSuccess, setScriptGenSuccess] = useState<string | null>(null);
+  const [isPromptSectionOpen, setIsPromptSectionOpen] = useState(true);
+
   // Click-outside listener to close any open dropdown popover
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -699,6 +861,9 @@ export default function BrainstormingTab({ activeProject, refreshProjectData }: 
   useEffect(() => {
     if (activeProject) {
       setScriptText(activeProject.script_narrative || "");
+      if (activeProject.video_concept && !promptInput) {
+        setPromptInput(activeProject.video_concept);
+      }
       const era = activeProject.theme_era || "ancient";
       const region = activeProject.theme_region || "cambodia";
       setSelectedEra(era);
@@ -707,6 +872,7 @@ export default function BrainstormingTab({ activeProject, refreshProjectData }: 
       setSelectedAspectRatio(activeProject.aspect_ratio || "16:9");
       setCustomSetting(activeProject.theme_custom || "");
       setSceneStaging((activeProject.scene_staging as any) || "studio");
+      setSelectedArtStyle(activeProject.art_style || "stickman");
 
       const setting = getEraRegionSetting(era, region);
       const defaultAttire = setting ? `${setting.attire}, ${setting.hair}` : "";
@@ -729,13 +895,13 @@ export default function BrainstormingTab({ activeProject, refreshProjectData }: 
       return rawLines.map((s) => {
         const trimmed = s.replace(/[\s\u200B\uFEFF]+$/g, "");
         return trimmed.endsWith("។") || trimmed.endsWith("៕") ? trimmed : `${trimmed}។`;
-      });
+      }).flatMap((text) => splitNarrationIntoScenes(text));
     } else {
       const rawSentences = clean
         .split(/[។៕]+/)
         .map((s) => s.replace(/\n+/g, " ").replace(/[\s\u200B\uFEFF]+$/g, "").trim())
         .filter((s) => s.length > 0);
-      return rawSentences.map((s) => (s.endsWith("។") || s.endsWith("៕") ? s : `${s}។`));
+      return rawSentences.map((s) => (s.endsWith("។") || s.endsWith("៕") ? s : `${s}។`)).flatMap((text) => splitNarrationIntoScenes(text));
     }
   }, [scriptText, splitMode]);
 
@@ -852,6 +1018,15 @@ export default function BrainstormingTab({ activeProject, refreshProjectData }: 
     setCharacterAttire(defaultAttire);
     if (activeProject?.id) {
       await updateActiveProject({ character_attire: defaultAttire });
+    }
+  };
+
+  // Art style handler: also writes the style formula into the global Illustration Style
+  const handleSelectArtStyle = async (styleId: string) => {
+    setSelectedArtStyle(styleId);
+    const style = ART_STYLES.find((a) => a.id === styleId) || ART_STYLES[0];
+    if (activeProject?.id) {
+      await updateActiveProject({ art_style: styleId, illustration_style: style.formula });
     }
   };
 
@@ -1044,39 +1219,38 @@ text, words, letters, labels, alphabet, captions, watermark, dark background, ni
       : `YOUR TARGET TASK (ALL SCENES 1 TO ${sentences.length})`;
 
     const attireText = characterAttire.trim() || `${eraSetting.attire}, ${eraSetting.hair}`;
+    const artStyle = ART_STYLES.find((a) => a.id === selectedArtStyle) || ART_STYLES[0];
+    const isStickman = artStyle.id === "stickman";
     const stagingInstruction = sceneStaging === "studio"
       ? `Uniform seamless ${moodObj.label} (${moodObj.desc}) background. The character and key story elements are grounded with a clean subtle contact shadow/floor patch. Clean minimalist composition with zero border frames.`
       : `Full-bleed 2D illustrated ${eraSetting.eraTitle} setting filling the frame edge-to-edge. Rich environmental context, vibrant flat colors. NO border margins, NO letterbox frames.`;
 
-    return `You are the lead visual director and storyboard artist for a top-tier educational animated explainer channel in the signature "Whatly" stickman doodle aesthetic.
+    return `You are the lead visual director and storyboard artist for a top-tier educational animated explainer channel in the ${isStickman ? 'signature "Whatly" stickman doodle aesthetic' : `${artStyle.label} aesthetic (${artStyle.mood})`}.
 
-### 1. CORE VISUAL ENGINE DIRECTIVE (LOCAL FLUX STICKMAN VECTOR SPEC):
+### 1. CORE VISUAL ENGINE DIRECTIVE (LOCAL FLUX ${artStyle.label.toUpperCase()} SPEC):
 - Target Image Engine: Local FLUX.1 vector diffusion.
 - CRITICAL: DO NOT use the word "Whatly" in the prompts (the model does not recognize proper-noun channel tags).
-- CORE STYLE FORMULA: "Minimalist 2D flat vector stickman doodle illustration, clean thick bold black marker outlines, flat solid color fills, zero shading, zero gradients, zero shadows, pure simple minimalist shapes, ${sceneStaging === 'studio' ? 'seamless ' + moodObj.label + ' studio background' : 'full-bleed flat 2D ' + eraSetting.eraTitle + ' environment'}, ${ratioObj.desc}, zero 3D rendering, zero photorealism, zero comic book detail".
+- CORE STYLE FORMULA: "${artStyle.formula}, ${sceneStaging === 'studio' ? 'seamless ' + moodObj.label + ' studio background' : 'full-bleed flat 2D ' + eraSetting.eraTitle + ' environment'}, ${ratioObj.desc}${isStickman ? ", zero 3D rendering, zero photorealism, zero comic book detail" : ""}".
 - PROMPT LENGTH: Concise, punchy, and cinematic (35 to 55 words max).
+- NARRATION TIMING: Use natural scene breaks without a fixed narration duration limit. Keep narration exact.
+- ALSO WRITE video_prompt: a short image-to-video motion direction describing character action and camera movement from the starting image. Do not change character designs or add speech. Animation duration will be measured from narration in Assembly.
 
-### 2. CHARACTER SPECIFICATION (TRUE WHATLY STICKMAN DOODLE):
-When human characters appear, they MUST be simple, cute 2D stick figures:
-- Round circle head filled with simple skin tone.
-- Two large round white cartoon eyes with black dot pupils.
-- Simple expressive line eyebrows and mouth (e.g. smiling, wide shock, determined).
-- Simple rounded torso wearing flat-colored attire: ${attireText}.
-- Thin black stick-line arms and legs (pure stickman limbs).
-- ABSOLUTELY NO muscular detail, NO realistic face, NO gritty comic book shading, NO crosshatching.
+### 2. CHARACTER SPECIFICATION (${isStickman ? "TRUE WHATLY STICKMAN DOODLE" : artStyle.label.toUpperCase()}):
+When human characters appear, they MUST follow this design:
+${artStyle.character.replace("{attire}", attireText)}
 
 ### 3. GOLDEN FRAMING RULES: EXPANSIVE BROAD VIEWS, BIRD'S EYE & DIAGRAMS (NO ISOLATED MACRO OBJECTS!):
-- STRICT PROHIBITION ON ISOLATED MACRO CLOSE-UPS: NEVER generate macro close-ups of single isolated objects sitting in the middle of a blank canvas (NO macro bread baskets, NO isolated wax scrolls, NO single tools floating alone). If an object or prop is mentioned in the narration, show it held by an active stickman in a wider scene, or integrated within an environmental setting or market!
+- STRICT PROHIBITION ON ISOLATED MACRO CLOSE-UPS: NEVER generate macro close-ups of single isolated objects sitting in the middle of a blank canvas (NO macro bread baskets, NO isolated wax scrolls, NO single tools floating alone). If an object or prop is mentioned in the narration, show it held by an active character in a wider scene, or integrated within an environmental setting or market!
 - MANDATORY BROAD & OVERVIEW FRAMING: Default to wide-angle panoramic establishing shots, broad landscape/cityscape overviews, high-angle aerial bird's-eye views, or educational 2D vector diagrams.
-- EDUCATIONAL VISUAL DIAGRAMS WELCOMED: When explaining concepts, architectures, social structures, or comparisons, use clean 2D vector educational diagrams (e.g. architectural cutaway cross-sections, split-panel before/after comparisons, or step-by-step visual process layouts).
+- EDUCATIONAL VISUAL DIAGRAMS WELCOMED: When explaining concepts, architectures, social structures, or comparisons, use clean educational diagrams in the chosen art style (e.g. architectural cutaway cross-sections, split-panel before/after comparisons, or step-by-step visual process layouts).
 - ZERO TEXT / ZERO WORDS: NEVER request words, letters, labels, or captions. Diffusion models cannot render text. Use only physical objects, structural layouts, and simple visual icons.
 
 ### 4. 4 HIGH-ENGAGEMENT BROAD SHOT TYPES:
 Cycle through these 4 physical shot types to keep the storyboard visually dynamic and expansive:
-1. WIDE OVERVIEW (PANORAMA): Expansive wide-angle landscape, settlement, market, temple complex, or city boulevard showing the full environment and multiple active stick figures.
+1. WIDE OVERVIEW (PANORAMA): Expansive wide-angle landscape, settlement, market, temple complex, or city boulevard showing the full environment and multiple active characters.
 2. BIRD'S EYE VIEW (TOP-DOWN AERIAL): High-angle aerial perspective looking down from above at town layouts, riverways, agricultural fields, irrigation canals, or bustling marketplace pathways.
-3. VISUAL DIAGRAM / CUTAWAY: Educational 2D vector explainer diagram, split-screen comparison (e.g. left vs right), or architectural cross-section cutaway showing structural levels.
-4. CHARACTER ACTION IN BROAD CONTEXT: Wide or medium-wide shot of 2+ stick figures engaged in physical storytelling (trading, running, building, journeying) with rich environmental backdrop.
+3. VISUAL DIAGRAM / CUTAWAY: Educational explainer diagram in the chosen art style, split-screen comparison (e.g. left vs right), or architectural cross-section cutaway showing structural levels.
+4. CHARACTER ACTION IN BROAD CONTEXT: Wide or medium-wide shot of 2+ characters engaged in physical storytelling (trading, running, building, journeying) with rich environmental backdrop.
 
 ### 5. THEME, REGION & SETTING CONTEXT:
 - Era: ${eraSetting.eraTitle}.
@@ -1106,16 +1280,18 @@ Do not wrap in extra conversational markdown text. RETURN ONLY VALID JSON:
     "scene_number": ${startNum},
     "narration_khmer": "<exact Khmer sentence from target list>",
     "shot_type": "wide_overview | birds_eye_view | visual_diagram | character_action_wide",
-    "image_prompt_english": "<concise 35-55 word prompt describing a CONCRETE broad/overview scene in minimalist stickman doodle style, zero text, bold black outlines, flat solid colors>",
-    "negative_prompt": "text, words, letters, labels, alphabet, captions, watermark, signature, macro close-up, isolated single object, comic book, gritty, realistic, muscular, detailed anatomy, 3D, render, shading, gradients, shadows, photorealistic"
+    "image_prompt_english": "<concise 35-55 word prompt describing a CONCRETE broad/overview scene in the ${artStyle.label} style (${artStyle.formula.split(",").slice(0, 3).join(",")}), zero text>",
+    "video_prompt": "<motion direction for this starting image; no speech or on-screen text>",
+    "negative_prompt": "text, words, letters, labels, alphabet, captions, watermark, signature, macro close-up, isolated single object, ${artStyle.negative}"
   }
 ]
 
-### REFERENCE EXAMPLES FOR ${eraSetting.eraTitle.toUpperCase()} (${regionObj.shortLabel.toUpperCase()}):
+${isStickman ? `### REFERENCE EXAMPLES FOR ${eraSetting.eraTitle.toUpperCase()} (${regionObj.shortLabel.toUpperCase()}):
 - Example Wide Overview: "${eraSetting.examples.wideOverview}"
 - Example Bird's Eye View: "${eraSetting.examples.birdsEyeView}"
 - Example Visual Diagram / Cutaway: "${eraSetting.examples.visualDiagram}"
-- Example Character Action (Broad): "${eraSetting.examples.characterAction}"`;
+- Example Character Action (Broad): "${eraSetting.examples.characterAction}"` : `### STYLE REMINDER:
+Every image_prompt_english must begin with the core style formula above and stay in the ${artStyle.label} style. Describe concrete wide/overview scenes for ${eraSetting.eraTitle.toUpperCase()} (${regionObj.shortLabel.toUpperCase()}) only; do not mention stickmen.`}`;
   };
 
   // Copy prompt to clipboard
@@ -1211,6 +1387,7 @@ Do not wrap in extra conversational markdown text. RETURN ONLY VALID JSON:
           scene_number: idx + 1,
           narration_khmer: s.narration_khmer,
           image_prompt_english: s.image_prompt_english,
+          video_prompt: s.video_prompt,
           negative_prompt: s.negative_prompt,
         }));
 
@@ -1228,6 +1405,143 @@ Do not wrap in extra conversational markdown text. RETURN ONLY VALID JSON:
     }
   };
 
+  // Direct In-App AI Storyboard Generation
+  const handleAutoGenerateScenes = async () => {
+    if (!scriptText.trim() || !activeProject?.id) return;
+    setIsAutoGenerating(true);
+    setAutoGenError(null);
+    setAutoGenSuccess(null);
+
+    const promptText = generatePrompt(selectedBatchIndex);
+    const mode = (selectedBatchIndex === -1 || (activeProject?.scenes || []).length === 0) ? "replace" : "append";
+
+    try {
+      const res = await fetch(`http://localhost:8000/api/projects/${activeProject.id}/auto-generate-scenes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: promptText,
+          visual_mode: "images",
+          mode: mode,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setAutoGenSuccess(`✨ Successfully created ${data.imported_count} scenes in Storyboard Deck!`);
+        if (refreshProjectData) {
+          await refreshProjectData();
+        }
+        setTimeout(() => setAutoGenSuccess(null), 5000);
+      } else {
+        const errText = await res.text();
+        let message = errText;
+        try {
+          const parsed = JSON.parse(errText);
+          message = parsed.detail || errText;
+        } catch {}
+        setAutoGenError(message);
+      }
+    } catch (err: any) {
+      setAutoGenError("Failed to auto-generate: " + err.message);
+    } finally {
+      setIsAutoGenerating(false);
+    }
+  };
+
+  // Generate full Khmer narrative script from prompt/idea
+  const handleGenerateScriptFromPrompt = async (customPrompt?: string) => {
+    const p = (customPrompt !== undefined ? customPrompt : promptInput).trim();
+    if (!p) {
+      setScriptGenError("Please enter a topic or prompt first.");
+      return;
+    }
+    if (!activeProject?.id) {
+      setScriptGenError("No active project found.");
+      return;
+    }
+
+    if (scriptText.trim().length > 30) {
+      const ok = window.confirm(
+        "Generate new script from prompt? This will replace your current narrative script."
+      );
+      if (!ok) return;
+    }
+
+    setIsGeneratingScript(true);
+    setScriptGenError(null);
+    setScriptGenSuccess(null);
+
+    try {
+      const res = await fetch(
+        `http://localhost:8000/api/projects/${activeProject.id}/generate-script-from-prompt`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: p,
+            target_length: promptTargetLength,
+            domain: promptDomain,
+            tone: promptTone,
+            language: "khmer",
+            apply_to_project: true,
+          }),
+        }
+      );
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Failed to generate script");
+      }
+
+      const data = await res.json();
+      setScriptText(data.script_narrative);
+      setScriptGenSuccess(`✨ Generated ${data.scene_count} scenes (${data.detected_domain}) successfully!`);
+      if (refreshProjectData) {
+        await refreshProjectData();
+      }
+      setTimeout(() => setScriptGenSuccess(null), 5000);
+    } catch (err: any) {
+      setScriptGenError(err.message || "Script generation failed.");
+    } finally {
+      setIsGeneratingScript(false);
+    }
+  };
+
+  // Direct 1-Click Quick Split Lines into Scenes (No AI required)
+  const handleQuickSplitScenes = async () => {
+    if (!scriptText.trim() || !activeProject?.id) return;
+    setIsSplitting(true);
+    setAutoGenError(null);
+    setAutoGenSuccess(null);
+
+    try {
+      const res = await fetch(`http://localhost:8000/api/projects/${activeProject.id}/segment-script`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          long_script: scriptText,
+          split_mode: splitMode,
+        }),
+      });
+
+      if (res.ok) {
+        setAutoGenSuccess("⚡ Split script lines directly into scenes!");
+        if (refreshProjectData) {
+          await refreshProjectData();
+        }
+        setTimeout(() => setAutoGenSuccess(null), 4000);
+      } else {
+        const err = await res.text();
+        setAutoGenError("Failed to segment: " + err);
+      }
+    } catch (err: any) {
+      setAutoGenError("Error segmenting: " + err.message);
+    } finally {
+      setIsSplitting(false);
+    }
+  };
+
   const scenes = activeProject?.scenes || [];
   const currentEra = ERA_OPTIONS.find((e) => e.id === selectedEra) || ERA_OPTIONS[0];
   const currentRegion = REGION_OPTIONS.find((r) => r.id === selectedRegion) || REGION_OPTIONS[0];
@@ -1236,6 +1550,12 @@ Do not wrap in extra conversational markdown text. RETURN ONLY VALID JSON:
   return (
     <div className="flex flex-col h-[calc(100vh-56px-48px)] max-h-[calc(100vh-56px-48px)] animate-in fade-in duration-200">
       
+      <div className="shrink-0 rounded-xl border border-border/70 bg-card p-3 mb-3 space-y-1">
+        <p className="text-xs font-semibold">Storyboard → Images → Voice → Animate in Assembly</p>
+        <p className="text-[11px] text-panel-text">Plan an image and motion direction for each short scene. Use natural narration breaks; longer voiceovers are supported. Generate the image and voice first, then animate to the voiceover duration in Assembly.</p>
+        {planningError && <p role="alert" className="text-[11px] text-red-500">{planningError}</p>}
+      </div>
+
       {/* ========================================================= */}
       {/* MAIN WORKSPACE: PLAIN ON BACKGROUND (NO GIANT OUTER BOXES)*/}
       {/* ========================================================= */}
@@ -1244,9 +1564,9 @@ Do not wrap in extra conversational markdown text. RETURN ONLY VALID JSON:
         {/* ======================================================= */}
         {/* SCRIPT STUDIO (LEFT COLUMN)                             */}
         {/* ======================================================= */}
-        <div className="lg:col-span-6 flex flex-col h-full pr-1">
+        <div className="lg:col-span-6 flex flex-col h-full pr-1 overflow-y-auto custom-scrollbar">
           {/* Header Bar */}
-          <div className="h-8 shrink-0 flex items-center justify-between gap-2">
+          <div className="h-8 shrink-0 flex items-center justify-between gap-2 mb-2">
             <div className="flex items-center gap-2.5 min-w-0">
               <div className="flex items-center gap-2 shrink-0">
                 <PenLine size={14} strokeWidth={1.8} className="text-primary" />
@@ -1303,6 +1623,201 @@ Do not wrap in extra conversational markdown text. RETURN ONLY VALID JSON:
                 <CornerDownLeft size={11} /> Auto-Break
               </button>
             </div>
+          </div>
+
+          {/* AI Prompt-to-Script Studio (Step 1: Idea / Topic to Narration) */}
+          <div className="shrink-0 mb-2.5 bg-card rounded-xl border border-border/80 shadow-2xs overflow-hidden transition-all">
+            {/* Collapsible Header */}
+            <div
+              onClick={() => setIsPromptSectionOpen(!isPromptSectionOpen)}
+              className="px-3 py-2 bg-zinc-50/70 dark:bg-zinc-900/60 border-b border-border/50 flex items-center justify-between cursor-pointer hover:bg-zinc-100/70 dark:hover:bg-zinc-800/60 transition-colors select-none"
+            >
+              <div className="flex items-center gap-2">
+                <div className="w-5 h-5 rounded-md bg-primary/10 text-primary flex items-center justify-center">
+                  <Sparkles size={12} className={isGeneratingScript ? "animate-spin text-primary" : "text-primary"} />
+                </div>
+                <span className="text-[11.5px] font-bold text-foreground">
+                  ✨ Prompt to Script (AI Writer)
+                </span>
+                <span className="text-[10px] text-panel-text hidden sm:inline">
+                  — Turn topic or lesson prompt directly into Khmer narration
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 text-panel-text text-[11px]">
+                <span className="text-[10px] font-medium text-primary">
+                  {isPromptSectionOpen ? "Collapse" : "Open Generator"}
+                </span>
+                <ChevronDown
+                  size={13}
+                  className={`transition-transform duration-200 ${isPromptSectionOpen ? "rotate-180" : ""}`}
+                />
+              </div>
+            </div>
+
+            {/* Expanded Body */}
+            {isPromptSectionOpen && (
+              <div className="p-3 space-y-2.5">
+                {/* Prompt Textarea */}
+                <div>
+                  <textarea
+                    rows={2}
+                    value={promptInput}
+                    onChange={(e) => setPromptInput(e.target.value)}
+                    placeholder="Describe your lesson topic, question, or scenario (e.g. របៀបគ្រប់គ្រងឱសថស្ថាននៅកម្ពុជា ឬ How to counsel patients on antibiotic use)..."
+                    className="w-full bg-background border border-border/70 rounded-lg p-2.5 text-[13px] text-foreground placeholder:text-zinc-400 focus:outline-none focus:border-primary/60 resize-none transition-colors"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        handleGenerateScriptFromPrompt();
+                      }
+                    }}
+                  />
+                </div>
+
+                {/* Quick Topic Presets */}
+                <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar pb-1 text-[10.5px]">
+                  <span className="text-panel-text font-semibold flex items-center gap-1 shrink-0">
+                    <Lightbulb size={11} className="text-amber-500" /> Presets:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPromptInput("ការគ្រប់គ្រងឱសថស្ថានសហគមន៍នៅកម្ពុជា និងស្តង់ដារ GPP ក្នុងការផ្តល់ប្រឹក្សាឱសថ");
+                      setPromptDomain("pharmacy");
+                    }}
+                    className="shrink-0 px-2 py-0.5 rounded-full bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 transition-colors cursor-pointer"
+                  >
+                    💊 Pharmacy: Community GPP
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPromptInput("ការប្រើប្រាស់ថ្នាំ Paracetamol និងកម្រិត dosage សុវត្ថិភាពសម្រាប់មនុស្សចាស់ និងកុមារ");
+                      setPromptDomain("pharmacy");
+                    }}
+                    className="shrink-0 px-2 py-0.5 rounded-full bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 transition-colors cursor-pointer"
+                  >
+                    💊 Safe Paracetamol Dose
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPromptInput("វិធីសាស្ត្របង្រៀនសកម្ម (Active Learning) សម្រាប់ថ្នាក់រៀនបឋមសិក្សា");
+                      setPromptDomain("teacher_education");
+                    }}
+                    className="shrink-0 px-2 py-0.5 rounded-full bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 transition-colors cursor-pointer"
+                  >
+                    📚 Pedagogy: Active Learning
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPromptInput("យុទ្ធសាស្ត្រវាយតម្លៃស្ថាបនា (Formative Assessment) ដោយមិនបាច់ប្រឡងក្រដាស");
+                      setPromptDomain("teacher_education");
+                    }}
+                    className="shrink-0 px-2 py-0.5 rounded-full bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 transition-colors cursor-pointer"
+                  >
+                    📚 Formative Checks
+                  </button>
+                </div>
+
+                {/* Configuration Row & Action */}
+                <div className="flex items-center justify-between gap-2 flex-wrap pt-1 border-t border-border/40">
+                  <div className="flex items-center gap-2 flex-wrap text-xs">
+                    {/* Target Length */}
+                    <div className="flex items-center gap-0.5 bg-zinc-100 dark:bg-zinc-800/80 p-0.5 rounded-lg border border-border/60 text-[10.5px]">
+                      <button
+                        type="button"
+                        onClick={() => setPromptTargetLength("short")}
+                        className={`px-2 py-0.5 rounded-md font-medium transition-all cursor-pointer ${
+                          promptTargetLength === "short" ? "bg-card text-foreground font-semibold shadow-2xs" : "text-panel-text hover:text-foreground"
+                        }`}
+                        title="~30-45s, 4-6 scenes"
+                      >
+                        Short (~30s)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPromptTargetLength("medium")}
+                        className={`px-2 py-0.5 rounded-md font-medium transition-all cursor-pointer ${
+                          promptTargetLength === "medium" ? "bg-card text-foreground font-semibold shadow-2xs" : "text-panel-text hover:text-foreground"
+                        }`}
+                        title="~1-2m, 8-12 scenes"
+                      >
+                        Standard (1-2m)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPromptTargetLength("detailed")}
+                        className={`px-2 py-0.5 rounded-md font-medium transition-all cursor-pointer ${
+                          promptTargetLength === "detailed" ? "bg-card text-foreground font-semibold shadow-2xs" : "text-panel-text hover:text-foreground"
+                        }`}
+                        title="~3m+, 14-18 scenes"
+                      >
+                        Detailed (3m+)
+                      </button>
+                    </div>
+
+                    {/* Domain */}
+                    <select
+                      value={promptDomain}
+                      onChange={(e) => setPromptDomain(e.target.value as any)}
+                      className="bg-card border border-border/60 rounded-lg px-2 py-1 text-[11px] text-foreground focus:outline-none cursor-pointer"
+                    >
+                      <option value="auto">Domain: Auto-Detect</option>
+                      <option value="pharmacy">💊 Pharmacy & Medical</option>
+                      <option value="teacher_education">📚 Pedagogy & Teaching</option>
+                      <option value="general">🌍 General Explainer</option>
+                    </select>
+
+                    {/* Tone */}
+                    <select
+                      value={promptTone}
+                      onChange={(e) => setPromptTone(e.target.value as any)}
+                      className="bg-card border border-border/60 rounded-lg px-2 py-1 text-[11px] text-foreground focus:outline-none cursor-pointer"
+                    >
+                      <option value="educational">Tone: Instructional</option>
+                      <option value="storytelling">Tone: Storytelling</option>
+                      <option value="conversational">Tone: Direct Counseling</option>
+                    </select>
+                  </div>
+
+                  {/* Generate Button */}
+                  <button
+                    type="button"
+                    disabled={isGeneratingScript || !promptInput.trim()}
+                    onClick={() => handleGenerateScriptFromPrompt()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-primary hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-sm transition-all"
+                  >
+                    {isGeneratingScript ? (
+                      <>
+                        <Loader2 size={13} className="animate-spin" />
+                        <span>Writing Script...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={13} />
+                        <span>Write Script (AI)</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Feedback Alerts */}
+                {scriptGenError && (
+                  <div className="flex items-center gap-1.5 text-xs text-red-500 bg-red-500/10 px-2.5 py-1.5 rounded-lg">
+                    <AlertCircle size={13} className="shrink-0" />
+                    <span>{scriptGenError}</span>
+                  </div>
+                )}
+                {scriptGenSuccess && (
+                  <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2.5 py-1.5 rounded-lg">
+                    <CheckCircle2 size={13} className="shrink-0" />
+                    <span>{scriptGenSuccess}</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Clean Writing Paper / Canvas (Box only where necessary!) */}
@@ -1452,6 +1967,54 @@ Do not wrap in extra conversational markdown text. RETURN ONLY VALID JSON:
                               <div className="text-[10px] text-panel-text leading-tight mt-0.5 truncate">
                                 {reg.desc}
                               </div>
+                            </div>
+                            {isSelected && <Check size={12} className="text-primary shrink-0" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Art Style Dropdown */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setOpenDropdown(openDropdown === "style" ? null : "style")}
+                  className={`flex items-center gap-1.5 bg-card hover:bg-zinc-100 dark:hover:bg-zinc-800 border rounded-lg px-2 py-1 text-[11px] font-semibold text-foreground cursor-pointer transition-colors shadow-2xs ${
+                    openDropdown === "style" ? "border-primary ring-1 ring-primary/30" : "border-border/70"
+                  }`}
+                  title="Select image art style"
+                >
+                  <span className="text-panel-text font-normal text-[11px]">Style:</span>
+                  <span>{(ART_STYLES.find((a) => a.id === selectedArtStyle) || ART_STYLES[0]).label}</span>
+                  <ChevronDown size={11} className={`text-panel-text ml-0.5 transition-transform duration-150 ${openDropdown === "style" ? "rotate-180 text-primary" : ""}`} />
+                </button>
+
+                {openDropdown === "style" && (
+                  <div className="absolute bottom-full mb-2 left-0 z-50 bg-card border border-border/80 rounded-xl shadow-2xl p-2 min-w-[300px] max-h-[320px] overflow-y-auto custom-scrollbar animate-in fade-in zoom-in-95 duration-100">
+                    <div className="text-[10px] font-semibold text-panel-text uppercase tracking-wider px-2 pb-1.5 border-b border-border/40 mb-1">
+                      Image Art Style
+                    </div>
+                    <div className="space-y-0.5">
+                      {ART_STYLES.map((st) => {
+                        const isSelected = selectedArtStyle === st.id;
+                        return (
+                          <button
+                            key={st.id}
+                            type="button"
+                            onClick={() => {
+                              handleSelectArtStyle(st.id);
+                              setOpenDropdown(null);
+                            }}
+                            className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition-colors cursor-pointer ${
+                              isSelected ? "bg-primary/10 text-primary font-semibold" : "text-foreground/85 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                            }`}
+                          >
+                            <div className="pr-2 min-w-0">
+                              <div className="text-[11px] font-semibold truncate">{st.label} <span className="font-normal text-panel-text">· {st.mood}</span></div>
+                              <div className="text-[10px] text-panel-text leading-tight mt-0.5 truncate">{st.bestFor}</div>
                             </div>
                             {isSelected && <Check size={12} className="text-primary shrink-0" />}
                           </button>
@@ -1844,8 +2407,45 @@ Do not wrap in extra conversational markdown text. RETURN ONLY VALID JSON:
               )}
             </div>
 
-            {/* Right: Action Buttons (Preview + Copy Prompt with Merged Stepper) */}
-            <div className="flex items-center gap-2 shrink-0 ml-auto">
+            {/* Right: Action Buttons (AI Generate + Quick Split + Preview + Copy Prompt with Merged Stepper) */}
+            <div className="flex items-center gap-2 shrink-0 ml-auto flex-wrap justify-end">
+              {/* Direct AI Generate Scenes Button */}
+              <button
+                type="button"
+                onClick={handleAutoGenerateScenes}
+                disabled={sentences.length === 0 || isAutoGenerating}
+                className="h-8 px-3 rounded-lg bg-gradient-to-r from-amber-500 via-primary to-primary hover:opacity-95 text-[11.5px] font-bold text-white flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:pointer-events-none shadow-sm"
+                title="Plan short scenes with an image prompt and a motion direction"
+              >
+                {isAutoGenerating ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin text-white" />
+                    <span>Generating...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={13} className="text-amber-200" />
+                    <span>Generate Scenes (AI)</span>
+                  </>
+                )}
+              </button>
+
+              {/* Quick 1:1 Split Lines Button */}
+              <button
+                type="button"
+                onClick={handleQuickSplitScenes}
+                disabled={sentences.length === 0 || isSplitting}
+                className="h-8 px-2.5 rounded-lg border border-border/80 bg-card hover:bg-zinc-100 dark:hover:bg-zinc-800 text-[11.5px] font-semibold text-foreground/85 flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:pointer-events-none shadow-2xs"
+                title="Directly split script lines 1:1 into scenes without calling AI"
+              >
+                {isSplitting ? (
+                  <Loader2 size={12} className="animate-spin text-primary" />
+                ) : (
+                  <Zap size={12} className="text-amber-500" />
+                )}
+                <span>Quick Split</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => setIsPreviewOpen(true)}
@@ -1931,6 +2531,31 @@ Do not wrap in extra conversational markdown text. RETURN ONLY VALID JSON:
             </div>
           </div>
 
+          {/* AI Generation Feedback Banners */}
+          {autoGenError && (
+            <div className="mt-2 p-2 bg-red-500/10 border border-red-500/25 rounded-lg text-xs text-red-600 dark:text-red-400 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <AlertCircle size={14} className="shrink-0" />
+                <span>{autoGenError}</span>
+              </div>
+              <button onClick={() => setAutoGenError(null)} className="hover:opacity-75">
+                <X size={12} />
+              </button>
+            </div>
+          )}
+
+          {autoGenSuccess && (
+            <div className="mt-2 p-2 bg-emerald-500/10 border border-emerald-500/25 rounded-lg text-xs text-emerald-600 dark:text-emerald-400 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <CheckCircle2 size={14} className="shrink-0" />
+                <span>{autoGenSuccess}</span>
+              </div>
+              <button onClick={() => setAutoGenSuccess(null)} className="hover:opacity-75">
+                <X size={12} />
+              </button>
+            </div>
+          )}
+
         </div>
 
         {/* ======================================================= */}
@@ -2005,7 +2630,7 @@ Do not wrap in extra conversational markdown text. RETURN ONLY VALID JSON:
                 value={jsonInput}
                 onChange={handleJsonChange}
                 rows={3}
-                placeholder='Paste JSON here: [ { "scene_number": 1, "narration_khmer": "...", "image_prompt_english": "...", "negative_prompt": "..." } ]'
+                placeholder='Paste JSON here: [ { "scene_number": 1, "narration_khmer": "...", "image_prompt_english": "...", "video_prompt": "..." } ]'
                 className="w-full p-2.5 bg-background/50 dark:bg-zinc-900/40 rounded-lg border border-border/60 font-mono text-[11px] text-foreground placeholder:text-zinc-400/40 focus:border-primary focus:outline-none transition-all resize-none custom-scrollbar"
               />
 
@@ -2046,14 +2671,47 @@ Do not wrap in extra conversational markdown text. RETURN ONLY VALID JSON:
           {/* Storyboard Scene Cards List - Fully Displayed, NO internal scrollbars */}
           <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2.5 my-2 pr-1">
             {scenes.length === 0 ? (
-              <div className="text-center py-12 px-4 border border-dashed border-border/70 rounded-xl text-panel-text space-y-2">
-                <Layers size={22} className="mx-auto opacity-30" />
-                <p className="text-[12px] font-medium text-foreground/80">Timeline is currently empty</p>
-                <p className="text-[11px] text-panel-text max-w-xs mx-auto leading-relaxed">
-                  1. Copy the frontier prompt on the left.
-                  <br />2. Paste into ChatGPT / Claude.
-                  <br />3. Click "Paste JSON" above to ingest scenes.
-                </p>
+              <div className="text-center py-10 px-4 border border-dashed border-border/70 rounded-xl text-panel-text space-y-3 bg-card/40">
+                <Layers size={26} className="mx-auto opacity-35 text-primary" />
+                <div className="space-y-1">
+                  <p className="text-[13px] font-semibold text-foreground/90">Storyboard Deck is currently empty</p>
+                  <p className="text-[11px] text-panel-text max-w-sm mx-auto leading-relaxed">
+                    {scriptText.trim()
+                      ? "Your script is filled! Click below to auto-generate visual prompts with AI, or split lines into scenes."
+                      : "Write or paste your educational script in the editor on the left to begin."}
+                  </p>
+                </div>
+                {scriptText.trim() && (
+                  <div className="flex items-center justify-center gap-2 pt-1 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={handleAutoGenerateScenes}
+                      disabled={isAutoGenerating || hasActiveVideoJobs}
+                      className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 via-primary to-primary hover:opacity-95 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-50"
+                    >
+                      {isAutoGenerating ? (
+                        <>
+                          <Loader2 size={13} className="animate-spin text-white" />
+                          <span>Generating Scenes...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles size={13} className="text-amber-200" />
+                          <span>Generate Scenes (AI)</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleQuickSplitScenes}
+                      disabled={isSplitting}
+                      className="px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-zinc-100 dark:hover:bg-zinc-800 text-foreground text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <Zap size={13} className="text-amber-500" />
+                      <span>Quick Split Lines</span>
+                    </button>
+                  </div>
+                )}
               </div>
             ) : (
               scenes.map((scene: any, idx: number) => {
@@ -2124,14 +2782,21 @@ Do not wrap in extra conversational markdown text. RETURN ONLY VALID JSON:
                   {/* English Visual Prompt - Fully Displayed (AutoResize) */}
                   <div className="select-text cursor-text" onMouseDown={(e) => e.stopPropagation()}>
                     <label className="text-[9px] font-semibold text-panel-text uppercase tracking-wider block mb-0.5 select-none">
-                      Stickman Visual Prompt (English)
+                      Image Prompt (English)
                     </label>
                     <AutoResizeTextarea
                       defaultValue={scene.image_prompt_english || ""}
+                      disabled={scene.video_status === "queued" || scene.video_status === "processing"}
                       onBlur={(val) => updateSingleScene(scene.id, { image_prompt_english: val })}
-                      placeholder="Stickman visual prompt in English..."
+                      placeholder="Describe the starting image for this scene…"
                       className="w-full bg-transparent font-mono text-[11px] text-foreground/80 leading-relaxed outline-none border-b border-border/30 focus:border-primary transition-colors py-0.5 select-text cursor-text"
                     />
+                  </div>
+
+                  {!scene.image_prompt_english && <button type="button" disabled={planningImageId !== null} onClick={() => handlePlanImage(scene.id)} className="text-xs text-primary hover:underline disabled:opacity-50">{planningImageId === scene.id ? "Planning image…" : "Plan image from narration"}</button>}
+                  <div className="select-text cursor-text" onMouseDown={(event) => event.stopPropagation()}>
+                    <label className="text-[9px] font-semibold text-panel-text uppercase tracking-wider block mb-0.5">Motion direction for Assembly</label>
+                    <AutoResizeTextarea defaultValue={scene.video_prompt || ""} disabled={scene.video_status === "queued" || scene.video_status === "processing"} onBlur={(value) => updateSingleScene(scene.id, { video_prompt: value })} placeholder="Character movement and camera direction; timing comes from the voiceover." className="w-full bg-transparent text-[11px] text-foreground/80 outline-none border-b border-border/30 focus:border-primary py-0.5" />
                   </div>
 
                   {/* Negative Constraints: Click-to-expand dropdown */}
@@ -2203,7 +2868,7 @@ Do not wrap in extra conversational markdown text. RETURN ONLY VALID JSON:
                 <Eye size={15} className={selectedBatchIndex === -2 ? "text-amber-500" : "text-primary"} />
                 <div>
                   <h3 className="text-[13px] font-bold text-foreground">
-                    {selectedBatchIndex === -2 ? "Thumbnail Frontier Prompt Preview" : "Frontier Prompt Preview"}
+                    {selectedBatchIndex === -2 ? "Thumbnail Frontier Prompt Preview" : "Image Storyboard Prompt Preview"}
                   </h3>
                   <p className="text-[10px] text-panel-text">
                     {selectedBatchIndex === -2 

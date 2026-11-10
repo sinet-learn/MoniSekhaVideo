@@ -8,6 +8,12 @@ import subprocess
 import soundfile as sf
 import imageio_ffmpeg
 from typing import Dict, Any, List, Optional
+from .subtitle_style import normalize_style
+from .subtitle_burn import generate_ass
+from .subtitle_preview import prepare_fonts
+from .khmer_text import analyze_khmer_text, subtitle_payload, subtitle_pages
+from .scene_timing import validate_scene_duration
+from .scene_animator import get_scene_animation_info, prepare_scene_chunk
 
 WORKSPACE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "workspace"))
 
@@ -21,6 +27,62 @@ ASPECT_RATIO_RESOLUTIONS = {
     "4:3": (1440, 1080),
     "2:3": (1080, 1620),
 }
+
+def get_best_khmer_font() -> str:
+    """Returns the highest quality installed Khmer font file path on the system."""
+    candidates = [
+        os.path.expanduser("~/Library/Fonts/KhmerOSBattambang-Regular.ttf"),
+        os.path.expanduser("~/Library/Fonts/KhmerOSbattambang.ttf"),
+        os.path.expanduser("~/Library/Fonts/KhmerOSContent-Regular.ttf"),
+        os.path.expanduser("~/Library/Fonts/NotoSansKhmer_Condensed-Regular.ttf"),
+        os.path.expanduser("~/Library/Fonts/KhmerOS.ttf"),
+        "/System/Library/Fonts/Supplemental/Khmer Sangam MN.ttf",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return "/System/Library/Fonts/Supplemental/Arial.ttf"
+
+def format_srt_timestamp(seconds: float) -> str:
+    """Round timestamps once, carrying milliseconds into the next second."""
+    total_millis = max(0, int(round(seconds * 1000)))
+    total_seconds, millis = divmod(total_millis, 1000)
+    total_minutes, secs = divmod(total_seconds, 60)
+    hours, mins = divmod(total_minutes, 60)
+    return f"{hours:02d}:{mins:02d}:{secs:02d},{millis:03d}"
+
+
+def generate_srt(coupled_items: List[Dict[str, Any]], style=None) -> str:
+    """Generate the same short, estimated subtitle pages used by the preview."""
+    srt_blocks = []
+    current_time = 0.0
+    counter = 1
+    settings = normalize_style(style)
+    for item in coupled_items:
+        analysis = analyze_khmer_text((item.get("narration_khmer") or "").strip())
+        dur = float(item.get("duration", 0.0))
+        if dur <= 0:
+            continue
+        for page in subtitle_pages(analysis, 1 if settings["behavior"] == "word" else settings["words_per_page"], settings["characters_per_page"]):
+            start_ts = format_srt_timestamp(current_time + dur * page["start"])
+            end_ts = format_srt_timestamp(current_time + dur * page["end"])
+            srt_blocks.append(f"{counter}\n{start_ts} --> {end_ts}\n{page['text']}\n")
+            counter += 1
+        current_time += dur
+    return "\n".join(srt_blocks)
+
+
+def check_filter_supported(ffmpeg_exe: str, filter_name: str) -> bool:
+    """Checks if an FFmpeg filter is compiled into the binary."""
+    try:
+        res = subprocess.run([ffmpeg_exe, "-filters"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for line in res.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == filter_name:
+                return True
+        return False
+    except Exception:
+        return False
 
 def get_audio_duration(file_path: str) -> float:
     """Returns duration in seconds using soundfile, fallback to 0.0 on error."""
@@ -92,14 +154,16 @@ def get_project_coupling_status(project, db) -> Dict[str, Any]:
         # Volume override
         vol = float(scene_volumes.get(str(num), 1.0))
 
-        # Coupling state
-        if image_exists and audio_exists and duration > 0:
+        animation = get_scene_animation_info(WORKSPACE_DIR, slug, num)
+        visual_exists = image_exists or animation["has_video"]
+
+        if visual_exists and audio_exists and scene.audio_status == "completed" and duration > 0:
             coupling_status = "ready"
             coupled_count += 1
             total_duration += duration
-        elif image_exists and not audio_exists:
+        elif visual_exists and not audio_exists:
             coupling_status = "missing_audio"
-        elif audio_exists and not image_exists:
+        elif audio_exists and not visual_exists:
             coupling_status = "missing_image"
         else:
             coupling_status = "uncoupled"
@@ -116,9 +180,17 @@ def get_project_coupling_status(project, db) -> Dict[str, Any]:
             "audio_status": scene.audio_status or "idle",
             "audio_mtime": aud_mtime,
             "duration": round(duration, 3),
+            "duration_limit_exceeded": False,
+            "audio_error": scene.audio_error,
             "volume": vol,
             "narration_khmer": scene.narration_khmer or "",
+            "subtitle": subtitle_payload(scene.narration_khmer or ""),
             "image_prompt_english": scene.image_prompt_english or "",
+            "video_status": scene.video_status or "idle",
+            "video_error": scene.video_error,
+            "video_prompt": scene.video_prompt,
+            "video_model": scene.video_model,
+            "animation": animation,
         })
 
     # Check for master voiceover timeline file
@@ -178,6 +250,7 @@ def get_project_coupling_status(project, db) -> Dict[str, Any]:
         "total_duration": round(total_duration, 2),
         "is_ready_to_render": coupled_count > 0 and coupled_count == len(scenes),
         "has_final_video": has_final_video,
+        "final_video_mtime": int(os.path.getmtime(final_video_path) * 1000) if has_final_video else 0,
         "final_video_path": f"{slug}/{final_video_name}" if has_final_video else None,
         "bgm_files": bgm_files,
         "timeline_data": timeline_data,
@@ -246,39 +319,90 @@ async def render_project_video(project_id: int, db) -> Dict[str, Any]:
             if not os.path.exists(aud) and s.audio_path:
                 aud = os.path.join(WORKSPACE_DIR, s.audio_path)
             
-            if os.path.exists(img) and os.path.exists(aud):
+            animation = get_scene_animation_info(WORKSPACE_DIR, slug, num)
+            video_path = os.path.join(WORKSPACE_DIR, animation["video_path"]) if animation["has_video"] else None
+            if (os.path.exists(img) or video_path) and os.path.exists(aud):
                 dur = get_audio_duration(aud)
                 if dur > 0:
+                    validate_scene_duration(dur)
+                    if s.audio_status != "completed":
+                        continue
                     scene_vol = float(scene_volumes.get(str(num), 1.0))
                     vol = max(0.0, scene_vol * master_voice_vol)
                     coupled_items.append({
                         "scene_number": num,
                         "image_path": img,
+                        "video_path": video_path,
                         "audio_path": aud,
                         "duration": dur,
-                        "volume": vol
+                        "volume": vol,
+                        "narration_khmer": s.narration_khmer or ""
                     })
 
         if not coupled_items:
-            raise Exception("No coupled scenes found (must have at least one scene with both image and audio).")
+            raise Exception("No coupled scenes found (each scene needs a video or image, plus narration audio).")
 
         RENDER_JOBS[project_id]["progress"] = 25
+
+        # Generate SubRip (.srt) subtitle file for educational delivery
+        srt_content = generate_srt(coupled_items, timeline_data.get("subtitle_style"))
+        srt_path = os.path.join(project_dir, "subtitles.srt")
+        try:
+            with open(srt_path, "w", encoding="utf-8") as f:
+                f.write(srt_content)
+        except Exception as e:
+            print(f"[RENDER WARNING] Could not write subtitles.srt: {e}")
 
         # Create temporary working directory for rendering artifacts
         temp_dir = os.path.join(project_dir, ".render_tmp")
         os.makedirs(temp_dir, exist_ok=True)
 
-        # Step 1: Create concat list for video images
-        # FFmpeg concat demuxer format:
-        # file 'image.png'
-        # duration 4.52
-        concat_file_path = os.path.join(temp_dir, "images_concat.txt")
-        with open(concat_file_path, "w", encoding="utf-8") as f:
-            for item in coupled_items:
-                f.write(f"file '{item['image_path']}'\n")
-                f.write(f"duration {item['duration']:.3f}\n")
-            # Repeat last file per FFmpeg concat demuxer requirements
-            f.write(f"file '{coupled_items[-1]['image_path']}'\n")
+        # Step 1: Render scene video tracks (Camera Motion, AI Video, or Static)
+        animation_mode = timeline_data.get("animation_mode", "camera")
+        scene_motions = timeline_data.get("scene_motions", {})
+
+        auto_motion_cycle = ["zoom_in", "pan_right", "zoom_out", "pan_left"]
+        scene_video_paths = []
+        is_animated_render = animation_mode in ("camera", "ai_video") or bool(scene_motions) or any(item.get("video_path") and not os.path.exists(item["image_path"]) for item in coupled_items)
+
+        if is_animated_render:
+            for idx, item in enumerate(coupled_items):
+                num = item["scene_number"]
+                chunk_file = os.path.join(temp_dir, f"scene_{idx:03d}_chunk.mp4")
+                
+                # Check for custom AI video
+                custom_vid = item.get("video_path")
+                
+                # Determine motion
+                motion = scene_motions.get(str(num)) or "auto"
+                if motion == "auto":
+                    motion = auto_motion_cycle[idx % len(auto_motion_cycle)]
+                elif motion in ("none", "static"):
+                    motion = "none"
+
+                prepare_scene_chunk(
+                    image_path=item["image_path"],
+                    output_chunk_path=chunk_file,
+                    duration=item["duration"],
+                    motion_type=motion,
+                    aspect_ratio=aspect_ratio,
+                    custom_video_path=custom_vid
+                )
+                scene_video_paths.append(chunk_file)
+
+            video_concat_txt = os.path.join(temp_dir, "video_chunks_concat.txt")
+            with open(video_concat_txt, "w", encoding="utf-8") as f:
+                for vp in scene_video_paths:
+                    f.write(f"file '{vp}'\n")
+            visual_input_args = ["-f", "concat", "-safe", "0", "-i", video_concat_txt]
+        else:
+            concat_file_path = os.path.join(temp_dir, "images_concat.txt")
+            with open(concat_file_path, "w", encoding="utf-8") as f:
+                for item in coupled_items:
+                    f.write(f"file '{item['image_path']}'\n")
+                    f.write(f"duration {item['duration']:.3f}\n")
+                f.write(f"file '{coupled_items[-1]['image_path']}'\n")
+            visual_input_args = ["-f", "concat", "-safe", "0", "-i", concat_file_path]
 
         # Step 2: Render each scene audio with individual volume to temporary WAVs
         scene_wav_paths = []
@@ -381,75 +505,116 @@ async def render_project_video(project_id: int, db) -> Dict[str, Any]:
 
         # Step 5: Build video filter chain (scaling + letterbox + text overlays)
         video_filters = [
+            "fps=30",  # Subtitle events must advance even over a still image.
             f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease",
             f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:color=black",
             "format=yuv420p"
         ]
 
         font_path = "/System/Library/Fonts/Supplemental/Arial.ttf"
-        khmer_font_path = "/System/Library/Fonts/Supplemental/Khmer Sangam MN.ttf"
+        khmer_font_path = get_best_khmer_font()
+        has_drawtext = check_filter_supported(ffmpeg_exe, "drawtext")
 
-        for txt in text_overlays:
-            content = txt.get("text", "").replace("'", "\\'").replace(":", "\\:")
-            if not content.strip():
-                continue
+        if text_overlays and has_drawtext:
+            for txt in text_overlays:
+                content = txt.get("text", "").replace("'", "\\'").replace(":", "\\:")
+                if not content.strip():
+                    continue
 
-            t_start = float(txt.get("start_time", 0.0))
-            t_dur = float(txt.get("duration", 3.0))
-            t_end = t_start + t_dur
-            color = txt.get("color", "#FFFFFF").replace("#", "0x")
-            pos = txt.get("position", "bottom")
-            font_size = int(txt.get("font_size", 36))
-            
-            is_khmer = any('\u1780' <= c <= '\u17ff' for c in content)
-            active_font = khmer_font_path if is_khmer and os.path.exists(khmer_font_path) else font_path
+                t_start = float(txt.get("start_time", 0.0))
+                t_dur = float(txt.get("duration", 3.0))
+                t_end = t_start + t_dur
+                color = txt.get("color", "#FFFFFF").replace("#", "0x")
+                pos = txt.get("position", "bottom")
+                font_size = int(txt.get("font_size", 36))
+                
+                is_khmer = any('\u1780' <= c <= '\u17ff' for c in content)
+                active_font = khmer_font_path if is_khmer and os.path.exists(khmer_font_path) else font_path
 
-            if "x_percent" in txt and "y_percent" in txt:
-                x_pct = max(0.0, min(1.0, float(txt.get("x_percent", 50)) / 100.0))
-                y_pct = max(0.0, min(1.0, float(txt.get("y_percent", 85)) / 100.0))
-                x_expr = f"(w-text_w)*{x_pct:.3f}"
-                y_expr = f"(h-text_h)*{y_pct:.3f}"
-            elif pos == "top":
-                x_expr = "(w-text_w)/2"
-                y_expr = "60"
-            elif pos == "center":
-                x_expr = "(w-text_w)/2"
-                y_expr = "(h-text_h)/2"
-            else:  # bottom
-                x_expr = "(w-text_w)/2"
-                y_expr = "h-text_h-80"
+                if "x_percent" in txt and "y_percent" in txt:
+                    x_pct = max(0.0, min(1.0, float(txt.get("x_percent", 50)) / 100.0))
+                    y_pct = max(0.0, min(1.0, float(txt.get("y_percent", 85)) / 100.0))
+                    x_expr = f"(w-text_w)*{x_pct:.3f}"
+                    y_expr = f"(h-text_h)*{y_pct:.3f}"
+                elif pos == "top":
+                    x_expr = "(w-text_w)/2"
+                    y_expr = "60"
+                elif pos == "center":
+                    x_expr = "(w-text_w)/2"
+                    y_expr = "(h-text_h)/2"
+                else:  # bottom
+                    x_expr = "(w-text_w)/2"
+                    y_expr = "h-text_h-80"
 
-            drawtext = (
-                f"drawtext=fontfile='{active_font}':text='{content}':"
-                f"fontsize={font_size}:fontcolor={color}:"
-                f"box=1:boxcolor=black@0.65:boxborderw=12:"
-                f"x={x_expr}:y={y_expr}:"
-                f"enable='between(t,{t_start:.2f},{t_end:.2f})'"
+                drawtext = (
+                    f"drawtext=fontfile='{active_font}':text='{content}':"
+                    f"fontsize={font_size}:fontcolor={color}:"
+                    f"box=1:boxcolor=black@0.65:boxborderw=12:"
+                    f"x={x_expr}:y={y_expr}:"
+                    f"enable='between(t,{t_start:.2f},{t_end:.2f})'"
+                )
+                video_filters.append(drawtext)
+        elif text_overlays and not has_drawtext:
+            print("[RENDER NOTICE] FFmpeg drawtext filter not available; text overlays skipped in video filter.")
+
+        # Captions are rendered into pixels. No subtitle track is required by
+        # the player, and Off also omits any automatically-enabled soft track.
+        subtitle_mode = timeline_data.get("subtitle_mode") or "kinetic"
+        ass_text = generate_ass(
+            coupled_items, out_w, out_h,
+            mode=subtitle_mode,
+            size=timeline_data.get("subtitle_size") or "md",
+            position=timeline_data.get("subtitle_position") or "bottom",
+            style=timeline_data.get("subtitle_style"),
+            font_family="Khmer OS Battambang",
+        )
+        if ass_text:
+            if not check_filter_supported(ffmpeg_exe, "ass"):
+                raise RuntimeError("This FFmpeg build cannot burn subtitles. Install a build with libass, or select subtitle Off before exporting.")
+            ass_text = generate_ass(
+                coupled_items, out_w, out_h, mode=subtitle_mode,
+                size=timeline_data.get("subtitle_size") or "md",
+                position=timeline_data.get("subtitle_position") or "bottom",
+                style=timeline_data.get("subtitle_style"),
+                **prepare_fonts(temp_dir, khmer_font_path),
             )
-            video_filters.append(drawtext)
+            with open(os.path.join(temp_dir, "burned_subtitles.ass"), "w", encoding="utf-8") as file:
+                file.write(ass_text)
+            # Fixed relative names plus cwd avoid FFmpeg filter quoting problems
+            # in project paths containing spaces, quotes or colons.
+            video_filters.append("ass=filename=burned_subtitles.ass:fontsdir=subtitle_fonts")
 
         vf_string = ",".join(video_filters)
 
-        # Step 6: Final MP4 compilation
+        # Step 6: Final MP4 compilation with captions already in the video filter
         final_mp4_path = os.path.join(project_dir, "final_output.mp4")
+        rendered_mp4_path = os.path.join(temp_dir, "final_output.mp4")
+
         cmd_final = [
             ffmpeg_exe, "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", concat_file_path,
+            *visual_input_args,
             "-i", mixed_audio_path,
+        ]
+
+        cmd_final.extend([
+            "-map", "0:v:0", "-map", "1:a:0",
             "-vf", vf_string,
             "-c:v", "libx264",
             "-preset", "fast",
             "-crf", "20",
             "-c:a", "aac",
             "-b:a", "192k",
+        ])
+
+        cmd_final.extend([
             "-shortest",
             "-pix_fmt", "yuv420p",
-            final_mp4_path
-        ]
+            rendered_mp4_path
+        ])
 
         RENDER_JOBS[project_id]["progress"] = 85
-        subprocess.run(cmd_final, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(cmd_final, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=temp_dir)
+        os.replace(rendered_mp4_path, final_mp4_path)
 
         try:
             shutil.rmtree(temp_dir)

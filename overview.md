@@ -1,4 +1,4 @@
-# CavePaint (Video Studio) — System Architecture & Technical Overview
+# MoniSekha (Video Studio) — System Architecture & Technical Overview
 
 > **Target Audience**: AI Agents and Engineers continuing development or maintenance on this codebase.  
 > **Database File**: `workspace/studio.db`  
@@ -8,7 +8,7 @@
 
 ## 1. Executive Summary & Mission
 
-**CavePaint** is an automated, local-first content creation studio and production pipeline that transforms raw research notes and ideas into fully synthesized, scene-by-scene audio-visual timelines.
+**MoniSekha** is an automated, local-first content creation studio and production pipeline that transforms raw research notes and ideas into fully synthesized, scene-by-scene audio-visual timelines.
 
 ### Primary Purpose & Visual Identity
 The system is built to automate the creation of educational/explainer videos in the visual style of YouTube channels like **Whatly** and **Kurzgesagt**:
@@ -20,7 +20,7 @@ The system is built to automate the creation of educational/explainer videos in 
 
 ## 2. Brainstorming Pipeline: Human-in-the-Loop Frontier LLM Architecture
 
-Instead of relying solely on generic background API calls, CavePaint utilizes a **Human-in-the-Loop Prompt & Batching Bridge** to harness the superior creative storytelling and visual reasoning of web-based frontier models (e.g. Claude 3.7 Sonnet / ChatGPT o3).
+Instead of relying solely on generic background API calls, MoniSekha utilizes a **Human-in-the-Loop Prompt & Batching Bridge** to harness the superior creative storytelling and visual reasoning of web-based frontier models (e.g. Claude 3.7 Sonnet / ChatGPT o3).
 
 ```mermaid
 flowchart TD
@@ -38,7 +38,7 @@ flowchart TD
     end
 
     subgraph IngestionFlow ["3. Ingestion & Scene Building"]
-        JSONResponse -->|Paste back into CavePaint| JSONInput["Paste JSON Target"]
+        JSONResponse -->|Paste back into MoniSekha| JSONInput["Paste JSON Target"]
         ToggleMode{"Toggle Mode: Append vs Replace"} --> JSONInput
         JSONInput --> SceneBuilder["Fetch into Scenes & studio.db"]
     end
@@ -108,7 +108,7 @@ Represents a complete video production workspace.
 * `aspect_ratio` (`String`): Target video aspect ratio (`16:9`, `9:16`, `1:1`, `4:3`, `2:3`, default `16:9`).
 * `character_attire` (`Text`): Era-appropriate clothing and hairstyle instructions (Whatly style).
 * `scene_staging` (`String`): Staging mode (`studio` for grounded white backdrop or `environment` for full-bleed scenery).
-* `flow_project_id` (`String`, Nullable): Unique Google Flow cloud project ID tied to this CavePaint project (1 CavePaint project = 1 Flow project ID, preventing Google anti-bot triggers).
+* `flow_project_id` (`String`, Nullable): Unique Google Flow cloud project ID tied to this MoniSekha project (1 MoniSekha project = 1 Flow project ID, preventing Google anti-bot triggers).
 * `timeline_data` (`Text`, Nullable): JSON-stringified timeline state (BGM start offsets, volume, ducking flags, text overlays with fonts/colors/timing, and per-scene voice volume overrides).
 * `scenes`: Relationship to `Scene` records with cascade delete.
 
@@ -222,14 +222,14 @@ flowchart TD
 * Powered by `ffroliva/gflow-cli` (v0.73.2+).
 * **Protocol**: Connects to the persistent daemon via Streamable HTTP MCP JSON-RPC (`http://127.0.0.1:8765/mcp`) using `tools/call` (`image_generate` or `generate_images`).
 * **Subprocess CLI Fallback**: If the daemon is temporarily offline or unresponsive, automatically falls back to `gflow image t2i` or `gflow image i2i` using Python 3.13.
-* **Project Isolation (Anti-Bot Pattern)**: One CavePaint project is mapped to exactly one Google Flow project ID (`flow_project_id`). This preserves Google Flow's workspace continuity and avoids triggering bot-detection rate limits from rapid project creation.
-* **Deterministic Refinement**: When refining a scene, CavePaint passes the active image and attached reference images directly as conditioning inputs, rather than relying on fragile multi-turn conversational session states.
+* **Project Isolation (Anti-Bot Pattern)**: One MoniSekha project is mapped to exactly one Google Flow project ID (`flow_project_id`). This preserves Google Flow's workspace continuity and avoids triggering bot-detection rate limits from rapid project creation.
+* **Deterministic Refinement**: When refining a scene, MoniSekha passes the active image and attached reference images directly as conditioning inputs, rather than relying on fragile multi-turn conversational session states.
 * **Batch Variant Generation**: Supports generating 1 to 4 images per run (`count` parameter).
 * **Model Selection**: Supports `nano2` (Nano Banana 2) and `nano-pro` (Nano Banana Pro).
 * **Manual Uploads & Variant Management**: Users can directly upload `.png`, `.jpg`, or `.webp` files, promote any variant to the active canvas, or promote any variant to a reference image.
 
 #### 5.3.3 Talk Directly to Flow (Scene Copilot) & Prompt Change Architecture
-To balance fast manual tweaks with creative AI direction, CavePaint implements two distinct operational modes for prompt and script changes:
+To balance fast manual tweaks with creative AI direction, MoniSekha implements two distinct operational modes for prompt and script changes:
 
 1. **Direct Manual Mode (Zero LLM / Direct DB Sync)**:
    * Next.js does **not** call any LLM or rephrase text when you edit text fields directly.
@@ -548,9 +548,9 @@ bash scripts/update_flow_mcp.sh
 ## 10. Developer Gotchas & Critical Guidelines
 
 1. **Google Flow Anti-Bot Heuristics**:
-   Always maintain **1 CavePaint project = 1 Google Flow project ID (`flow_project_id`)**. Never create a new Flow project per scene. Rapid project creation triggers Google bot detection and captcha challenges.
+   Always maintain **1 MoniSekha project = 1 Google Flow project ID (`flow_project_id`)**. Never create a new Flow project per scene. Rapid project creation triggers Google bot detection and captcha challenges.
 2. **Playwright Chromium Profile Lock**:
-   `gflow-cli` uses an exclusive lock on its user profile directory (`profile_cavepaint`). Do not run multiple concurrent `gflow` processes using the same profile. CavePaint's single-lane sequential worker (`queue_worker.py`) guarantees serial execution.
+   `gflow-cli` uses an exclusive lock on its user profile directory (`profile_cavepaint`). Do not run multiple concurrent `gflow` processes using the same profile. MoniSekha's single-lane sequential worker (`queue_worker.py`) guarantees serial execution.
 3. **Python Runtime Isolation**:
    Do **not** attempt to install `gflow-cli` inside the `voice` Conda environment (Python 3.10). `gflow-cli` requires Python >= 3.11, while VoxCPM2/PyTorch dependencies in `voice` require Python 3.10. Keep them isolated via the HTTP daemon on port `8765`.
 4. **Next.js 16 Dynamic Route Parameters**:

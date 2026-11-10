@@ -33,33 +33,48 @@ def generate_text(db: Session, system_prompt: str, user_content: str, json_mode:
         
     if provider == "gemini":
         key_name = f"GEMINI_KEY_{slot}"
-        api_key = os.environ.get(key_name)
+        api_key = os.environ.get(key_name) or os.environ.get("GEMINI_API_KEY") or os.environ.get("GEMINI_KEY_1")
         if not api_key:
             raise HTTPException(
-                status_code=500, 
-                detail=f"Missing API Key configuration for Gemini Slot {slot}. Please check your environment configurations."
+                status_code=400, 
+                detail=f"Missing API Key for Gemini. Please configure your Gemini API Key in Engine Settings (bottom-left of sidebar)."
             )
             
         genai.configure(api_key=api_key)
         
-        # Use gemini-2.5-flash as standard good model for production
-        model = genai.GenerativeModel(
-            "gemini-2.5-flash",
-            system_instruction=system_prompt
-        )
-        
+        # Try active production Gemini flash models (gemini-3-flash-preview, gemini-3.1-flash-lite-preview)
+        preferred_model = os.environ.get("GEMINI_MODEL")
+        candidate_models = [preferred_model] if preferred_model else [
+            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-flash-latest",
+            "gemini-2.5-pro",
+        ]
         generation_config = genai.types.GenerationConfig()
         if json_mode:
             generation_config.response_mime_type = "application/json"
-            
-        try:
-            response = model.generate_content(
-                user_content,
-                generation_config=generation_config
-            )
-            result = response.text
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Gemini API error: {str(e)}")
+
+        last_error = None
+        result = None
+        for model_name in candidate_models:
+            try:
+                model = genai.GenerativeModel(
+                    model_name,
+                    system_instruction=system_prompt
+                )
+                response = model.generate_content(
+                    user_content,
+                    generation_config=generation_config
+                )
+                if response and response.text:
+                    result = response.text
+                    break
+            except Exception as e:
+                last_error = e
+                continue
+                
+        if result is None:
+            raise HTTPException(status_code=500, detail=f"Gemini API error: {str(last_error)}")
             
     elif provider == "groq":
         key_name = f"GROQ_KEY_{slot}"
